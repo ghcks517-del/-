@@ -137,6 +137,10 @@ export default function RevisionHistory() {
        if (selectedMonth !== "ALL" && parseInt(m, 10) !== selectedMonth) return false;
     }
     return true;
+  }).sort((a, b) => {
+    const dateA = a.promulgationDate || "";
+    const dateB = b.promulgationDate || "";
+    return dateA.localeCompare(dateB);
   });
 
   return (
