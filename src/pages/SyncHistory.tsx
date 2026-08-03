@@ -49,7 +49,7 @@ export default function SyncHistory() {
     } catch (err) {
       console.error(err);
     } finally {
-      setTimeout(() => setRunning(false), 2000);
+      setRunning(false);
     }
   };
 

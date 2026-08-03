@@ -1,18 +1,10 @@
+import app from "./server/app.js";
 import express from "express";
 import path from "path";
-import cors from "cors";
 import { createServer as createViteServer } from "vite";
-import apiRoutes from "./server/routes/api.js";
 
 async function startServer() {
-  const app = express();
-  const PORT = 3000;
-
-  app.use(cors());
-  app.use(express.json());
-
-  // API routes
-  app.use("/api", apiRoutes);
+  const PORT = process.env.PORT || 3000;
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

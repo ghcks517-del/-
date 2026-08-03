@@ -21,9 +21,8 @@ export function setupSyncRoutes(router: Router) {
       const { year, month } = req.body || {};
       const syncService = new SyncService();
       // Start in background so we don't timeout the HTTP request
-      syncService.runMonthlySync("MANUAL", year, month).catch(err => console.error("Background sync error:", err));
-      
-      res.json({ message: "Monthly sync job started in background" });
+      await syncService.runMonthlySync("MANUAL", year, month);
+      res.json({ message: "Monthly sync job completed" });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
