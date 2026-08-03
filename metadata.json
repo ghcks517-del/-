@@ -1,0 +1,6 @@
+{
+  "name": "법규 개정 모니터링",
+  "description": "한국 기업의 법규 개정사항을 월 1회 자동으로 수집하고, 개정 전·후 내용을 비교·정리하여 엑셀로 다운로드할 수 있는 실무용 웹 애플리케이션",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

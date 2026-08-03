@@ -1,11 +1,26 @@
-<div align="center">
+# 법규 개정 모니터링
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+한국 기업의 법규 개정사항을 월 1회 자동으로 수집하고, 개정 전·후 내용을 비교·정리하여 엑셀로 다운로드할 수 있는 실무용 웹 애플리케이션입니다.
 
-  <h1>Built with AI Studio</h2>
+## 주요 기능
+- **법규 관리**: 모니터링 대상 법규 등록 및 검색
+- **개정 내역 비교**: 개정 전/후 조문 비교 (Diff 제공) 및 관련 부서, 비고 입력
+- **AI 요약**: Gemini AI를 활용한 개정 조항 요약
+- **엑셀 다운로드**: 필터링된 개정 내역을 엑셀 파일로 출력
+- **자동 수집**: 매월 정기적으로 최신 법령 개정 내역 스크래핑
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## 실행 및 배포 방법
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+### 로컬 환경 실행
+1. `.env.example` 파일을 복사하여 `.env` 파일 생성
+2. `LAW_API_KEY`, `CRON_SECRET` 등 환경변수 설정
+3. 패키지 설치: `npm install`
+4. 실행: `npm run dev`
 
-</div>
+### 운영 환경 점검 체크리스트
+- [ ] 환경변수(`GEMINI_API_KEY`, `LAW_API_KEY`, `CRON_SECRET`) 설정 확인
+- [ ] Firestore 데이터베이스 생성 및 권한 설정
+- [ ] Cloud Scheduler를 통한 자동 수집 작업 등록
+- [ ] 엑셀 다운로드 시 사용자 입력값(셀 수식 삽입 등) 필터링 처리 확인
+
+자세한 배포 가이드는 `DEPLOYMENT.md` 파일을 참고하십시오.
