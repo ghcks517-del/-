@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
-import { Download, Search, Filter, Eye } from "lucide-react";
+import { Download, Search, Filter, Eye, Sparkles, Loader2, Trash2 } from "lucide-react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Revision, REVIEW_STATUS_LABELS } from "../types";
 import clsx from "clsx";
 import * as diff from "diff";
@@ -10,11 +12,80 @@ export default function RevisionHistory() {
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedRevision, setSelectedRevision] = useState<Revision | null>(null);
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [aiComparison, setAiComparison] = useState<string | null>(null);
+  const [isGeneratingAI, setIsGeneratingAI] = useState(false);
 
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState<number | "ALL">("ALL");
   const [selectedMonth, setSelectedMonth] = useState<number | "ALL">("ALL");
   const [searchKeyword, setSearchKeyword] = useState("");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  const handleToggleSelection = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const next = new Set(selectedItems);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelectedItems(next);
+  };
+
+  const handleToggleAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      setSelectedItems(new Set(filteredRevisions.map(r => r.id)));
+    } else {
+      setSelectedItems(new Set());
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedItems.size === 0) return;
+    
+    
+    try {
+      await api.revisions.delete(Array.from(selectedItems));
+      setRevisions(prev => prev.filter(r => !selectedItems.has(r.id)));
+      setSelectedItems(new Set());
+      if (selectedRevision && selectedItems.has(selectedRevision.id)) {
+        setSelectedRevision(null);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("삭제 중 오류가 발생했습니다.");
+    }
+  };
+
+
+  const handleGenerateAiComparison = async () => {
+    if (!selectedRevision) return;
+    setIsGeneratingAI(true);
+    setAiComparison(null);
+    try {
+      const response = await fetch("/api/revisions/compare", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          lawName: selectedRevision.lawName,
+          promulgationDate: selectedRevision.promulgationDate,
+          enforcementDate: selectedRevision.enforcementDate,
+          currentText: selectedRevision.afterText
+        })
+      });
+      const data = await response.json();
+      if (data.comparisonTable) {
+        setAiComparison(data.comparisonTable);
+      } else if (data.error) {
+        alert(data.error);
+      }
+    } catch (e) {
+      alert("AI 생성 중 오류가 발생했습니다.");
+    } finally {
+      setIsGeneratingAI(false);
+    }
+  };
+
 
   useEffect(() => {
     setLoading(true);
@@ -76,10 +147,18 @@ export default function RevisionHistory() {
             <h1 className="text-2xl font-bold text-slate-900">개정 내역</h1>
             <p className="text-sm text-slate-500 mt-1">수집된 법규 개정 사항을 확인하고 비교합니다.</p>
           </div>
-          <button onClick={handleExport} className="bg-white border border-slate-300 text-slate-700 px-4 py-2 rounded-md hover:bg-slate-50 transition-colors flex items-center gap-2 font-medium text-sm shadow-sm">
-            <Download className="w-4 h-4" />
-            엑셀 다운로드
-          </button>
+          <div className="flex gap-2">
+            {selectedItems.size > 0 && (
+              <button onClick={() => setShowDeleteConfirm(true)} className="bg-red-50 border border-red-200 text-red-600 px-4 py-2 rounded-md hover:bg-red-100 transition-colors flex items-center gap-2 font-medium text-sm shadow-sm">
+                <Trash2 className="w-4 h-4" />
+                선택 삭제 ({selectedItems.size})
+              </button>
+            )}
+            <button onClick={handleExport} className="bg-white border border-slate-300 text-slate-700 px-4 py-2 rounded-md hover:bg-slate-50 transition-colors flex items-center gap-2 font-medium text-sm shadow-sm">
+              <Download className="w-4 h-4" />
+              엑셀 다운로드
+            </button>
+          </div>
         </div>
 
         <div className="bg-white border border-slate-200 rounded-lg shadow-sm flex-1 flex flex-col min-h-0">
@@ -93,6 +172,15 @@ export default function RevisionHistory() {
                 onChange={(e) => setSearchKeyword(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
               />
+            </div>
+            <div className="flex items-center gap-3 bg-slate-50 p-2 rounded-md border border-slate-200 mb-2">
+              <input 
+                type="checkbox" 
+                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 ml-1"
+                checked={filteredRevisions.length > 0 && selectedItems.size === filteredRevisions.length}
+                onChange={handleToggleAll}
+              />
+              <span className="text-sm font-medium text-slate-700">전체 선택</span>
             </div>
             <div className="flex gap-2">
               <select 
@@ -121,14 +209,23 @@ export default function RevisionHistory() {
             {filteredRevisions.map((rev) => (
               <div 
                 key={rev.id} 
-                onClick={() => setSelectedRevision(rev)}
+                onClick={() => { setSelectedRevision(rev); setAiComparison(null); }}
                 className={clsx(
                   "p-4 rounded-md cursor-pointer border mb-2 transition-colors",
                   selectedRevision?.id === rev.id ? "bg-blue-50 border-blue-200" : "bg-white border-slate-200 hover:bg-slate-50"
                 )}
               >
-                <div className="flex justify-between items-start mb-2">
-                  <h3 className="font-medium text-slate-900 text-sm">{rev.lawName}</h3>
+                <div className="flex justify-between items-start mb-2 gap-2">
+                  <div className="flex items-start gap-2 pt-0.5">
+                    <input 
+                      type="checkbox" 
+                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 mt-1 cursor-pointer"
+                      checked={selectedItems.has(rev.id)}
+                      onChange={(e) => handleToggleSelection(rev.id, e as any)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <h3 className="font-medium text-slate-900 text-sm leading-snug">{rev.lawName}</h3>
+                  </div>
                   <span className={clsx(
                     "text-xs px-2 py-0.5 rounded-full font-medium",
                     rev.reviewStatus === "NEW" ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-700"
@@ -153,15 +250,33 @@ export default function RevisionHistory() {
               <h2 className="font-bold text-lg text-slate-900">{selectedRevision.lawName}</h2>
               <p className="text-xs text-slate-500 mt-1">공포일: {selectedRevision.promulgationDate} | 시행일: {selectedRevision.enforcementDate}</p>
             </div>
-            <button onClick={() => setSelectedRevision(null)} className="text-slate-400 hover:text-slate-600">
+            <button onClick={() => { setSelectedRevision(null); setAiComparison(null); }} className="text-slate-400 hover:text-slate-600">
               ✕
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6">
+            
             <div>
-              <h3 className="text-sm font-semibold text-slate-700 mb-3 uppercase tracking-wide">개정 전/후 비교</h3>
-              <DiffViewer before={selectedRevision.beforeText} after={selectedRevision.afterText} />
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wide">개정 전/후 비교</h3>
+                <button 
+                  onClick={handleGenerateAiComparison}
+                  disabled={isGeneratingAI}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-md text-xs font-medium border border-indigo-200 transition-colors disabled:opacity-50"
+                >
+                  {isGeneratingAI ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  {isGeneratingAI ? "AI 비교표 생성 중..." : "AI 비교표 자동 생성"}
+                </button>
+              </div>
+              {aiComparison ? (
+                <div className="prose prose-sm max-w-none border border-indigo-200 rounded-lg p-6 bg-indigo-50/30 prose-table:w-full prose-table:border-collapse prose-th:border prose-th:border-slate-300 prose-th:bg-slate-100 prose-th:p-2 prose-td:border prose-td:border-slate-300 prose-td:p-2">
+                  <Markdown remarkPlugins={[remarkGfm]}>{aiComparison}</Markdown>
+                </div>
+              ) : (
+                <DiffViewer before={selectedRevision.beforeText} after={selectedRevision.afterText} diffData={selectedRevision.diffData} />
+              )}
             </div>
+
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">관련 부서</label>
@@ -202,12 +317,91 @@ export default function RevisionHistory() {
           </div>
         </div>
       )}
+
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60]">
+          <div className="bg-white rounded-lg shadow-lg w-96 p-6">
+            <h2 className="text-lg font-bold text-slate-900 mb-2">항목 삭제</h2>
+            <p className="text-sm text-slate-600 mb-6">선택한 {selectedItems.size}건의 개정 내역을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.</p>
+            <div className="flex justify-end gap-2">
+              <button 
+                onClick={() => setShowDeleteConfirm(false)}
+                className="px-4 py-2 border border-slate-300 text-slate-700 rounded-md text-sm font-medium hover:bg-slate-50"
+              >
+                취소
+              </button>
+              <button 
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  handleDeleteSelected();
+                }}
+                className="px-4 py-2 bg-red-600 text-white rounded-md text-sm font-medium hover:bg-red-700"
+              >
+                삭제
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
 
-function DiffViewer({ before, after }: { before: string; after: string }) {
+function DiffViewer({ before, after, diffData }: { before: string; after: string; diffData?: string }) {
+  let parsedPairs = null;
+  if (diffData) {
+    try {
+      parsedPairs = JSON.parse(diffData);
+    } catch (e) {}
+  }
+
+  if (parsedPairs && Array.isArray(parsedPairs) && parsedPairs.length > 0) {
+    return (
+      <div className="border border-slate-300 rounded-lg overflow-hidden flex flex-col shadow-sm bg-white">
+        <div className="grid grid-cols-2 bg-[#f8f9fa] border-b border-slate-300">
+          <div className="p-3 text-center text-sm font-bold text-slate-700 border-r border-slate-300">현행</div>
+          <div className="p-3 text-center text-sm font-bold text-slate-700">개정안</div>
+        </div>
+        <div className="flex flex-col">
+          {parsedPairs.map((pair, idx) => {
+             // to show diffs inside the pair, we could do diffWordsWithSpace, but usually oldAndNew format doesn't have exact same structure.
+             // Let's use diffWordsWithSpace just in case they are similar, or just render it.
+             const oldText = pair.old || "";
+             const newText = pair.new || "";
+             
+             // If old and new are exactly the same or just spacing diff, we can just show it. 
+             // But actually showing word diffs is better.
+             const wordDiffs = diff.diffWordsWithSpace(oldText, newText);
+             
+             return (
+               <div className="grid grid-cols-2 border-b border-slate-300 last:border-0" key={idx}>
+                 <div className="p-4 text-sm leading-[1.7] whitespace-pre-wrap text-slate-800 border-r border-slate-300 break-keep">
+                   {oldText === "&lt;신 설&gt;" ? <span className="text-[#e11d48]">&lt;신 설&gt;</span> : 
+                     (oldText ? wordDiffs.map((part, i) => {
+                       if (part.added) return null;
+                       return <span key={i} className={part.removed ? "text-[#e11d48] line-through bg-red-50" : ""}>{part.value}</span>;
+                     }) : <span className="text-[#e11d48]">&lt;신 설&gt;</span>)}
+                 </div>
+                 <div className="p-4 text-sm leading-[1.7] whitespace-pre-wrap text-slate-800 break-keep">
+                   {newText === "&lt;생 략&gt;" ? <span className="text-slate-500">&lt;생 략&gt;</span> :
+                     (newText ? wordDiffs.map((part, i) => {
+                       if (part.removed) return null;
+                       return <span key={i} className={part.added ? "text-[#2563eb] font-medium bg-blue-50" : ""}>{part.value}</span>;
+                     }) : <span className="text-slate-500">&lt;삭 제&gt;</span>)}
+                 </div>
+               </div>
+             );
+          })}
+        </div>
+    </div>
+  );
+
+}
+  // fallback to generic diffLines
   const lineDiffs = diff.diffLines(before, after);
+  
+  
   
   const rows: JSX.Element[] = [];
   let pendingRemoved: diff.Change | null = null;

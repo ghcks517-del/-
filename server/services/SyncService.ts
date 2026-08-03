@@ -70,7 +70,7 @@ export class SyncService {
                 revisionType: rev.revisionType,
                 beforeText: rev.beforeText,
                 afterText: rev.afterText,
-                diffData: "",
+                diffData: rev.diffData || "",
                 aiSummary,
                 departments: reg.defaultDepartments || [],
                 note: reg.defaultNote || "",

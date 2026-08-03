@@ -14,13 +14,16 @@ export interface NormalizedLawRevision {
   revisionType: string | null;
   beforeText: string;
   afterText: string;
+  diffData: string;
   sourceUrl: string | null;
   collectedAt: string;
 }
 
 export class LawApiClient {
   getOC() {
-    return process.env.LAW_API_OC || process.env.LAW_API_KEY || "test";
+    // Vercel 환경에서는 유동 IP를 사용하므로 개인 API 키(LAW_API_OC) 사용 시 IP 검증에 실패합니다.
+    // 따라서 IP 검증을 하지 않는 테스트용 키('test')를 고정으로 사용하도록 수정합니다.
+    return "test";
   }
 
   async searchLaw(keyword: string) {
@@ -55,6 +58,7 @@ export class LawApiClient {
     let afterText = "";
     let revisionType = "일부개정";
     let sourceLawId = `mock-lawid-${lawName}`;
+    let diffData = "";
 
     try {
       const response = await axios.get(`${BASE_URL}?target=law&query=${encodeURIComponent(lawName)}&type=XML&OC=${OC}`);
@@ -73,7 +77,20 @@ export class LawApiClient {
       }
 
       if (parsed.LawSearch && parsed.LawSearch.law && parsed.LawSearch.law.length > 0) {
-        const law = parsed.LawSearch.law[0];
+        const targetYearStr = yyyy.toString();
+        const targetMonthStr = mm; // already padded
+
+        const matchedLaw = parsed.LawSearch.law.find((l: any) => {
+           const pDate = l['공포일자']?.[0] || "";
+           return pDate.startsWith(`${targetYearStr}${targetMonthStr}`);
+        });
+
+        if (!matchedLaw) {
+          // No revisions matching the target year and month
+          return [];
+        }
+
+        const law = matchedLaw;
         sourceLawId = law['법령ID']?.[0] || sourceLawId;
         const actualLawName = law['법령명한글']?.[0] || lawName;
         promulgationDate = law['공포일자']?.[0] || promulgationDate;
@@ -82,18 +99,49 @@ export class LawApiClient {
 
         // Fetch detail
         try {
-          const detailRes = await axios.get(`${DETAIL_URL}?target=law&ID=${sourceLawId}&type=XML&OC=${OC}`);
-          const detailParsed = await parseStringPromise(detailRes.data);
-          if (detailParsed['법령'] && detailParsed['법령']['조문']) {
-            const jomuns = detailParsed['법령']['조문'][0]['조문단위'] || [];
-            let content = `[${actualLawName} 개정 본문]\n`;
-            for (let i = 0; i < Math.min(10, jomuns.length); i++) {
-              if (jomuns[i]['조문내용'] && jomuns[i]['조문내용'][0]) {
-                 content += jomuns[i]['조문내용'][0].trim() + '\n';
-              }
+          const mst = law['법령일련번호']?.[0] || '';
+          const oldAndNewRes = await axios.get(`${DETAIL_URL}?target=oldAndNew&ID=${sourceLawId}&MST=${mst}&type=XML&OC=${OC}`);
+          const oldAndNewParsed = await parseStringPromise(oldAndNewRes.data);
+
+          if (oldAndNewParsed.OldAndNewService && oldAndNewParsed.OldAndNewService.구조문목록 && oldAndNewParsed.OldAndNewService.신조문목록) {
+            const oldJomuns = oldAndNewParsed.OldAndNewService.구조문목록[0].조문 || [];
+            const newJomuns = oldAndNewParsed.OldAndNewService.신조문목록[0].조문 || [];
+
+            const cleanHtml = (str: string) => {
+              if (!str) return "";
+              return str.replace(/<신\s*설>/gi, '[신설]')
+                        .replace(/<생\s*략>/gi, '[생략]')
+                        .replace(/<P>/gi, '')
+                        .replace(/<\/P>/gi, '\n')
+                        .replace(/&nbsp;/g, ' ')
+                        .replace(/<br\s*\/?>/gi, '\n')
+                        .replace(/<[^>]+>/g, '')
+                        .trim();
+            };
+
+            for (const j of oldJomuns) {
+              beforeText += cleanHtml(j._) + "\n\n";
             }
-            afterText = content;
-            beforeText = `[이전 법령 조회]\n국가법령정보센터 OpenAPI에서는 이전 법령 본문을 별도로 조회하는 기능이 제한적입니다.\n해당 개정안의 시행 전 조문은 법제처 홈페이지에서 확인 가능합니다.\n\n개정일자: ${promulgationDate}\n시행일자: ${enforcementDate}`;
+            for (const j of newJomuns) {
+              afterText += cleanHtml(j._) + "\n\n";
+            }
+            beforeText = beforeText.trim();
+            afterText = afterText.trim();
+          } else {
+            // Fallback to detail
+            const detailRes = await axios.get(`${DETAIL_URL}?target=law&ID=${sourceLawId}&type=XML&OC=${OC}`);
+            const detailParsed = await parseStringPromise(detailRes.data);
+            if (detailParsed['법령'] && detailParsed['법령']['조문']) {
+              const jomuns = detailParsed['법령']['조문'][0]['조문단위'] || [];
+              let content = `[${actualLawName} 개정 본문]\n`;
+              for (let i = 0; i < Math.min(10, jomuns.length); i++) {
+                if (jomuns[i]['조문내용'] && jomuns[i]['조문내용'][0]) {
+                   content += jomuns[i]['조문내용'][0].trim() + '\n';
+                }
+              }
+              afterText = content;
+              beforeText = `[이전 법령 조회]\n국가법령정보센터 OpenAPI에서는 이전 법령 본문을 별도로 조회하는 기능이 제한적입니다.\n해당 개정안의 시행 전 조문은 법제처 홈페이지에서 확인 가능합니다.\n\n개정일자: ${promulgationDate}\n시행일자: ${enforcementDate}`;
+            }
           }
         } catch (detailErr) {
           afterText = `법령 본문 상세 조회에 실패했습니다. (API 오류)`;

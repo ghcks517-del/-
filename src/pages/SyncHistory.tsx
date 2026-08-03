@@ -136,6 +136,10 @@ export default function SyncHistory() {
               </button>
             </div>
             
+            <p className="text-sm text-slate-500 mb-6">
+              선택한 연도와 월의 <strong>공포일자</strong>를 기준으로 법규 개정 사항을 수집합니다.
+            </p>
+
             <div className="flex gap-4 mb-6">
               <div className="flex-1">
                 <label className="block text-sm font-medium text-slate-700 mb-1">연도</label>

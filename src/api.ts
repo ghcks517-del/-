@@ -12,6 +12,14 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  revisions: {
+    delete: (ids: string[]) =>
+      fetchJSON<{ success: boolean }>("/revisions", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      }),
+  },
   regulations: {
     list: () => fetchJSON<Regulation[]>("/regulations"),
     create: (data: Partial<Regulation>) =>
