@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Search, ExternalLink, Calendar, Building2, Trash2 } from "lucide-react";
 import { LegislativeNotice } from "../types";
+import { CheckSquare } from "lucide-react";
 
 export default function LegislativeNoticeList() {
   const [notices, setNotices] = useState<LegislativeNotice[]>([]);
@@ -9,6 +10,7 @@ export default function LegislativeNoticeList() {
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState<number | "ALL">("ALL");
   const [selectedMonth, setSelectedMonth] = useState<number | "ALL">("ALL");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   useEffect(() => {
     const loadNotices = async () => {
@@ -27,12 +29,14 @@ export default function LegislativeNoticeList() {
     loadNotices();
   }, []);
 
+  
   const handleDelete = async (id: string) => {
     if (!confirm("이 입법예고를 삭제하시겠습니까?")) return;
     try {
       const res = await fetch(`/api/legislative-notices/${id}`, { method: "DELETE" });
       if (res.ok) {
         setNotices(notices.filter(n => n.id !== id));
+        setSelectedIds(prev => prev.filter(selectedId => selectedId !== id));
       } else {
         alert("삭제에 실패했습니다.");
       }
@@ -40,6 +44,42 @@ export default function LegislativeNoticeList() {
       console.error(e);
       alert("삭제 중 오류가 발생했습니다.");
     }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) return;
+    if (!confirm(`선택한 ${selectedIds.length}건의 입법예고를 삭제하시겠습니까?`)) return;
+    
+    try {
+      const res = await fetch(`/api/legislative-notices/bulk-delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedIds })
+      });
+      if (res.ok) {
+        setNotices(notices.filter(n => !selectedIds.includes(n.id)));
+        setSelectedIds([]);
+      } else {
+        alert("삭제에 실패했습니다.");
+      }
+    } catch (e) {
+      console.error(e);
+      alert("삭제 중 오류가 발생했습니다.");
+    }
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.length === filteredNotices.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filteredNotices.map(n => n.id));
+    }
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(selectedId => selectedId !== id) : [...prev, id]
+    );
   };
 
   const filteredNotices = notices.filter(notice => {
@@ -71,6 +111,15 @@ export default function LegislativeNoticeList() {
           <h1 className="text-2xl font-bold text-slate-900">입법예고</h1>
           <p className="text-sm text-slate-500 mt-1">수집된 입법예고 및 행정예고 사항을 확인합니다.</p>
         </div>
+        {selectedIds.length > 0 && (
+          <button 
+            onClick={handleBulkDelete}
+            className="flex items-center gap-2 bg-red-50 text-red-600 hover:bg-red-100 px-4 py-2 rounded-md font-medium transition-colors"
+          >
+            <Trash2 className="w-4 h-4" />
+            선택 삭제 ({selectedIds.length})
+          </button>
+        )}
       </div>
 
       <div className="bg-white border border-slate-200 rounded-lg shadow-sm p-4 flex gap-4 items-center">
@@ -107,6 +156,20 @@ export default function LegislativeNoticeList() {
       </div>
 
       <div className="flex-1 bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden flex flex-col">
+        {!loading && filteredNotices.length > 0 && (
+          <div className="px-6 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+            <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700">
+              <input 
+                type="checkbox" 
+                className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                checked={selectedIds.length === filteredNotices.length && filteredNotices.length > 0}
+                onChange={toggleSelectAll}
+              />
+              전체 선택
+            </label>
+            <div className="text-sm text-slate-500">총 {filteredNotices.length}건</div>
+          </div>
+        )}
         {loading ? (
           <div className="p-8 text-center text-slate-500">로딩 중...</div>
         ) : filteredNotices.length === 0 ? (
@@ -114,9 +177,18 @@ export default function LegislativeNoticeList() {
         ) : (
           <div className="overflow-y-auto p-0 m-0">
             {filteredNotices.map(notice => (
-              <div key={notice.id} className="p-6 border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                <div className="flex justify-between items-start mb-2">
-                  <h3 className="text-lg font-bold text-slate-900 pr-4">{notice.title}</h3>
+              <div key={notice.id} className="p-6 border-b border-slate-100 hover:bg-slate-50 transition-colors flex gap-4">
+                <div className="pt-1">
+                  <input 
+                    type="checkbox" 
+                    className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    checked={selectedIds.includes(notice.id)}
+                    onChange={() => toggleSelect(notice.id)}
+                  />
+                </div>
+                <div className="flex-1">
+                  <div className="flex justify-between items-start mb-2">
+                    <h3 className="text-lg font-bold text-slate-900 pr-4">{notice.title}</h3>
                   <div className="flex items-center gap-2">
                     <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700 whitespace-nowrap flex-shrink-0">
                       {notice.status}
@@ -147,6 +219,7 @@ export default function LegislativeNoticeList() {
                     <ExternalLink className="w-4 h-4" />
                     상세보기
                   </a>
+                </div>
                 </div>
               </div>
             ))}
