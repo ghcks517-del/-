@@ -1,93 +1,50 @@
 import fs from 'fs';
 let content = fs.readFileSync('server/services/LawApiClient.ts', 'utf-8');
 
-const oldCode = `
-          if (oldAndNewParsed.OldAndNewService && oldAndNewParsed.OldAndNewService.구조문목록 && oldAndNewParsed.OldAndNewService.신조문목록) {
-            const oldJomuns = oldAndNewParsed.OldAndNewService.구조문목록[0].조문 || [];
-            const newJomuns = oldAndNewParsed.OldAndNewService.신조문목록[0].조문 || [];
-
-            const cleanHtml = (str: string) => {
-              if (!str) return "";
-              return str.replace(/<신\s*설>/gi, '[신설]')
-                        .replace(/<생\s*략>/gi, '[생략]')
-                        .replace(/<P>/gi, '')
-                        .replace(/<\/P>/gi, '\n')
-                        .replace(/&nbsp;/g, ' ')
-                        .replace(/<br\s*\/?>/gi, '\n')
-                        .replace(/<[^>]+>/g, '')
-                        .trim();
-            };
-
-            for (const j of oldJomuns) {
-              beforeText += cleanHtml(j._) + "\n\n";
+const targetOldNew = `            for (const j of oldJomuns) {
+              beforeText += cleanHtml(j._) + "\\n\\n";
             }
             for (const j of newJomuns) {
-              afterText += cleanHtml(j._) + "\n\n";
-            }
-            beforeText = beforeText.trim();
-            afterText = afterText.trim();
-          } else {
-`;
+              afterText += cleanHtml(j._) + "\\n\\n";
+            }`;
 
-const newCode = `
-          let diffDataStr = "";
-          if (oldAndNewParsed.OldAndNewService && oldAndNewParsed.OldAndNewService.구조문목록 && oldAndNewParsed.OldAndNewService.신조문목록) {
-            const oldJomuns = oldAndNewParsed.OldAndNewService.구조문목록[0].조문 || [];
-            const newJomuns = oldAndNewParsed.OldAndNewService.신조문목록[0].조문 || [];
-
-            const cleanHtml = (str: string) => {
+const replOldNew = `            const cleanHtmlBasic = (str: string) => {
               if (!str) return "";
-              return str.replace(/<신\s*설>/gi, '&lt;신 설&gt;')
-                        .replace(/<생\s*략>/gi, '&lt;생 략&gt;')
-                        .replace(/<P>/gi, '')
-                        .replace(/<\/P>/gi, '\n')
-                        .replace(/&nbsp;/g, ' ')
-                        .replace(/<br\s*\/?>/gi, '\n')
-                        .replace(/<[^>]+>/g, '')
-                        .trim();
+              return str.replace(/<[^>]+>/g, '').trim();
             };
 
-            const pairs = [];
-            const maxLen = Math.max(oldJomuns.length, newJomuns.length);
-            for (let i = 0; i < maxLen; i++) {
-              const oldText = oldJomuns[i] ? cleanHtml(oldJomuns[i]._) : "";
-              const newText = newJomuns[i] ? cleanHtml(newJomuns[i]._) : "";
-              pairs.push({ old: oldText, new: newText });
-              beforeText += oldText + "\\n\\n";
-              afterText += newText + "\\n\\n";
-            }
-            beforeText = beforeText.trim();
-            afterText = afterText.trim();
-            diffDataStr = JSON.stringify(pairs);
-          } else {
-`;
+            const length = Math.max(oldJomuns.length, newJomuns.length);
+            for (let i = 0; i < length; i++) {
+              let oldStr = oldJomuns[i]?._ || "";
+              let newStr = newJomuns[i]?._ || "";
+              
+              if (/<신\\s*설>/i.test(oldStr)) {
+                 let cleanNew = cleanHtmlBasic(newStr);
+                 let label = "신설";
+                 if (/^제\\d+조/.test(cleanNew)) label = "조항 신설";
+                 else if (/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮]/.test(cleanNew)) label = "항 신설";
+                 else if (/^\\d+\\./.test(cleanNew)) label = "호 신설";
+                 else if (/^[가-하]\\./.test(cleanNew)) label = "목 신설";
+                 
+                 oldStr = oldStr.replace(/<신\\s*설>/gi, \`[\${label}]\`);
+              }
 
-content = content.replace(oldCode.trim(), newCode.trim());
+              if (/<삭\\s*제>/i.test(newStr)) {
+                 let cleanOld = cleanHtmlBasic(oldStr);
+                 let label = "삭제";
+                 if (/^제\\d+조/.test(cleanOld)) label = "조항 삭제";
+                 else if (/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮]/.test(cleanOld)) label = "항 삭제";
+                 else if (/^\\d+\\./.test(cleanOld)) label = "호 삭제";
+                 else if (/^[가-하]\\./.test(cleanOld)) label = "목 삭제";
+                 
+                 newStr = newStr.replace(/<삭\\s*제>/gi, \`[\${label}]\`);
+              }
 
-// Also need to pass diffDataStr to the return object
-content = content.replace(
-  'diffData: "",',
-  'diffData: typeof diffDataStr !== "undefined" ? diffDataStr : "",'
-);
+              beforeText += cleanHtml(oldStr) + "\\n\\n";
+              afterText += cleanHtml(newStr) + "\\n\\n";
+            }`;
 
-// We need to inject `let diffData = ""` at the top, but since we are doing `typeof diffDataStr` it might be tricky.
-// Wait, `diffDataStr` is scoped inside the `try` block. Let's just define `let diffData = "";` before `try`.
-content = content.replace(
-  'let sourceLawId = `mock-lawid-${lawName}`;',
-  'let sourceLawId = `mock-lawid-${lawName}`;\n    let diffData = "";'
-);
-
-content = content.replace(
-  'diffDataStr = JSON.stringify(pairs);',
-  'diffData = JSON.stringify(pairs);'
-);
-
-content = content.replace(
-  'diffData: typeof diffDataStr !== "undefined" ? diffDataStr : "",',
-  'diffData,'
-);
-
-// wait, let me just replace the 'diffData: "",' with 'diffData,' 
-content = content.replace('diffData: "",', 'diffData,');
+content = content.replace(targetOldNew, replOldNew);
+content = content.replace(`.replace(/<생\\s*략>/gi, '[생략]')`, `.replace(/<생\\s*략>/gi, '[생략]')\n                        .replace(/<삭\\s*제>/gi, '[삭제]')`);
 
 fs.writeFileSync('server/services/LawApiClient.ts', content);

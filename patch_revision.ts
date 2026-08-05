@@ -1,11 +1,22 @@
 import fs from 'fs';
 let content = fs.readFileSync('src/pages/RevisionHistory.tsx', 'utf-8');
-content = content.replace(
-  'import { Download, Search, Filter, Eye } from "lucide-react";',
-  'import { Download, Search, Filter, Eye, Sparkles, Loader2 } from "lucide-react";\nimport Markdown from "react-markdown";\nimport remarkGfm from "remark-gfm";'
-);
-content = content.replace(
-  'const [selectedRevision, setSelectedRevision] = useState<Revision | null>(null);',
-  'const [selectedRevision, setSelectedRevision] = useState<Revision | null>(null);\n  const [aiComparison, setAiComparison] = useState<string | null>(null);\n  const [isGeneratingAI, setIsGeneratingAI] = useState(false);'
-);
+
+// handleExport logic 
+const handleExportCode = `  const handleExport = () => {
+    const selectedRevisions = revisions.filter(r => selectedItems.has(r.id));
+    if (selectedRevisions.length === 0) {
+      alert("다운로드할 항목을 선택해주세요.");
+      return;
+    }
+    ExcelExportService.exportRevisions(selectedRevisions);
+  };`;
+content = content.replace(handleExportCode, '');
+
+// The export button
+const exportButtonCode = `            <button onClick={handleExport} className="bg-white border border-slate-300 text-slate-700 px-4 py-2 rounded-md hover:bg-slate-50 transition-colors flex items-center gap-2 font-medium text-sm shadow-sm">
+              <Download className="w-4 h-4" />
+              엑셀 다운로드
+            </button>`;
+content = content.replace(exportButtonCode, '');
+
 fs.writeFileSync('src/pages/RevisionHistory.tsx', content);

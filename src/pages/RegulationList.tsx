@@ -11,6 +11,8 @@ export default function RegulationList() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingReg, setEditingReg] = useState<Partial<Regulation> | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState<string | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
 
   useEffect(() => {
     loadRegulations();
@@ -28,15 +30,26 @@ export default function RegulationList() {
   };
 
   const handleDelete = async (id: string) => {
-    if (confirm("정말로 삭제하시겠습니까?")) {
-      await api.regulations.delete(id);
-      loadRegulations();
+    setIsConfirmingDelete(id);
+  };
+
+  const confirmDelete = async () => {
+    if (isConfirmingDelete) {
+      try {
+        await api.regulations.delete(isConfirmingDelete);
+        await loadRegulations();
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setIsConfirmingDelete(null);
+      }
     }
   };
 
   const handleSave = async () => {
+    setModalError(null);
     if (!editingReg?.lawName) {
-      alert("법규명을 입력해주세요.");
+      setModalError("법규명을 입력해주세요.");
       return;
     }
     
@@ -51,7 +64,7 @@ export default function RegulationList() {
       loadRegulations();
     } catch (err) {
       console.error(err);
-      alert("저장에 실패했습니다.");
+      setModalError("저장에 실패했습니다.");
     } finally {
       setIsSaving(false);
     }
@@ -173,6 +186,12 @@ export default function RegulationList() {
               </button>
             </div>
             
+            {modalError && (
+              <div className="px-6 py-3 bg-red-50 border-b border-red-100 text-red-600 text-sm">
+                {modalError}
+              </div>
+            )}
+
             <div className="p-6 overflow-y-auto space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">법규명 <span className="text-red-500">*</span></label>
@@ -258,6 +277,31 @@ export default function RegulationList() {
                 className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
               >
                 {isSaving ? "저장 중..." : "저장"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isConfirmingDelete && (
+        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-sm overflow-hidden flex flex-col">
+            <div className="p-6">
+              <h3 className="text-lg font-bold text-slate-900 mb-2">법규 삭제</h3>
+              <p className="text-sm text-slate-600">정말로 이 법규를 삭제하시겠습니까?</p>
+            </div>
+            <div className="p-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-2">
+              <button 
+                onClick={() => setIsConfirmingDelete(null)}
+                className="px-4 py-2 bg-white border border-slate-300 text-slate-700 rounded-md text-sm font-medium hover:bg-slate-50"
+              >
+                취소
+              </button>
+              <button 
+                onClick={confirmDelete}
+                className="px-4 py-2 bg-red-600 text-white rounded-md text-sm font-medium hover:bg-red-700"
+              >
+                삭제
               </button>
             </div>
           </div>

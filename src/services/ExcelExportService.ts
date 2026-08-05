@@ -4,8 +4,8 @@ import * as diff from "diff";
 import { Revision } from "../types";
 
 export class ExcelExportService {
-  static async exportRevisions(revisions: Revision[], filenamePrefix = "법규개정현황") {
-    if (!revisions || revisions.length === 0) {
+  static async exportRevisions(revisions: any[], notices: any[] = [], filenamePrefix = "법규개정현황") {
+    if ((!revisions || revisions.length === 0) && (!notices || notices.length === 0)) {
       alert("다운로드할 데이터가 없습니다.");
       return;
     }
@@ -90,27 +90,43 @@ export class ExcelExportService {
       const beforeText = this.sanitizeInput(rev.beforeText);
       const afterText = this.sanitizeInput(rev.afterText);
 
-      // 대략적인 줄 수 계산 (명시적인 개행 + 글자수에 따른 자동 줄바꿈 고려)
-      const calcLines = (text: string, width: number) => {
-          if (!text) return 1;
-          const lines = text.split('\n');
-          let totalLines = 0;
-          lines.forEach(line => {
-              totalLines += Math.max(1, Math.ceil(line.length / (width * 0.7))); // 한글 보정
-          });
-          return totalLines;
+      const splitIntoParagraphs = (text: string) => {
+          if (!text) return [];
+          let t = text.replace(/\r/g, '');
+          let blocks: string[] = [];
+          
+          const lines = t.split('\n');
+          let currentBlock = "";
+          
+          for (const line of lines) {
+              // 제O조, 제O조의O, 부칙, [별표] 등으로 시작하는지 확인
+              const isNewSection = /^\s*(제\d+조(?:의\d+)?|부칙|\[별표)/.test(line);
+              if (isNewSection) {
+                  if (currentBlock) blocks.push(currentBlock.trim());
+                  currentBlock = line;
+              } else {
+                  if (currentBlock) {
+                      currentBlock += '\n' + line;
+                  } else {
+                      currentBlock = line;
+                  }
+              }
+          }
+          if (currentBlock) blocks.push(currentBlock.trim());
+          
+          return blocks;
       };
 
-      // 컬럼 폭 약 55
-      const beforeLines = calcLines(beforeText, 55); 
-      const afterLines = calcLines(afterText, 55);
-      const maxLines = Math.max(beforeLines, afterLines, 1);
+      let beforeSections = splitIntoParagraphs(beforeText);
+      let afterSections = splitIntoParagraphs(afterText);
       
-      // 엑셀 최대 행 높이 한계(약 409 포인트) 고려
-      const rowsToSpan = Math.max(1, Math.ceil(maxLines / 27));
-      const heightPerRow = Math.min(409, Math.ceil((maxLines * 15) / rowsToSpan) + 15); // 패딩 고려
+      if (beforeSections.length === 0 && afterSections.length === 0) {
+          beforeSections = [""];
+          afterSections = [""];
+      }
+      
+      const maxSections = Math.max(beforeSections.length, afterSections.length, 1);
 
-      // 임시 부처 맵핑
       let agency = "-";
       if (rev.lawName.includes("기본법 시행령") || rev.lawName.includes("탄소중립")) agency = "기후에너지환경부";
       else if (rev.lawName.includes("환경") || rev.lawName.includes("폐기물") || rev.lawName.includes("수도")) agency = "환경부";
@@ -119,116 +135,204 @@ export class ExcelExportService {
       else if (rev.lawName.includes("건설")) agency = "국토교통부";
       else if (rev.lawName.includes("안전보건") || rev.lawName.includes("산업안전")) agency = "고용노동부";
 
-      worksheet.getCell(currentRowIdx, 1).value = rev.lawName;
-      worksheet.getCell(currentRowIdx, 2).value = rev.revisionType || "일부개정";
-      worksheet.getCell(currentRowIdx, 3).value = agency;
-      worksheet.getCell(currentRowIdx, 4).value = rev.promulgationDate ? rev.promulgationDate.replace(/-/g, '.') : "-";
-      worksheet.getCell(currentRowIdx, 5).value = rev.enforcementDate ? rev.enforcementDate.replace(/-/g, '.') : "-";
-
-      // Compute rich text diffs
-      const lineDiffs = diff.diffLines(beforeText, afterText);
-      const beforeRichText: any[] = [];
-      const afterRichText: any[] = [];
-
-      let pendingRemoved: diff.Change | null = null;
-      let pendingAdded: diff.Change | null = null;
-
-      const flush = () => {
-        if (pendingRemoved || pendingAdded) {
-          const bText = pendingRemoved ? pendingRemoved.value.replace(/\n$/, '') : "";
-          const aText = pendingAdded ? pendingAdded.value.replace(/\n$/, '') : "";
-
-          const wordDiffs = diff.diffWordsWithSpace(bText, aText);
+      for (let i = 0; i < maxSections; i++) {
+          const bText = beforeSections[i] || "";
+          const aText = afterSections[i] || "";
           
-          if (bText) {
-            wordDiffs.forEach(part => {
-              if (part.added) return;
-              beforeRichText.push({
-                text: part.value,
-                font: part.removed ? { color: { argb: "FFe11d48" } } : undefined
+          const calcLines = (text: string, width: number) => {
+              if (!text) return 1;
+              const lines = text.split('\n');
+              let totalLines = 0;
+              lines.forEach(line => {
+                  totalLines += Math.max(1, Math.ceil(line.length / (width * 0.7)));
               });
-            });
-            beforeRichText.push({ text: '\n' });
-          } else if (pendingRemoved) { // Only if there was a removed part but empty bText, though unlikely.
-             beforeRichText.push({ text: '<신 설>\n', font: { color: { argb: "FFe11d48" } } });
-          }
+              return totalLines;
+          };
 
-          if (aText) {
-            wordDiffs.forEach(part => {
-              if (part.removed) return;
-              afterRichText.push({
-                text: part.value,
-                font: part.added ? { color: { argb: "FF2563eb" } } : undefined
-              });
-            });
-            afterRichText.push({ text: '\n' });
-          } else if (pendingAdded) {
-            afterRichText.push({ text: '<삭 제>\n', font: { color: { argb: "FF5a6e85" } } }); // slate-500 approx
-          }
+          const beforeLines = calcLines(bText, 55); 
+          const afterLines = calcLines(aText, 55);
+          const maxLinesCount = Math.max(beforeLines, afterLines, 1);
+          
+          const rowsToSpan = Math.max(1, Math.ceil(maxLinesCount / 27));
+          const heightPerRow = Math.min(409, Math.ceil((maxLinesCount * 15) / rowsToSpan) + 15);
 
-          pendingRemoved = null;
-          pendingAdded = null;
-        }
-      };
+          worksheet.getCell(currentRowIdx, 1).value = rev.lawName;
+          worksheet.getCell(currentRowIdx, 2).value = rev.revisionType || "일부개정";
+          worksheet.getCell(currentRowIdx, 3).value = agency;
+          const formatDate = (dateStr: string | null) => {
+              if (!dateStr) return "-";
+              if (dateStr.includes("-")) return dateStr.replace(/-/g, '.');
+              if (dateStr.length === 8) return `${dateStr.substring(0,4)}.${dateStr.substring(4,6)}.${dateStr.substring(6,8)}`;
+              return dateStr;
+          };
+          
+          worksheet.getCell(currentRowIdx, 4).value = formatDate(rev.promulgationDate);
+          worksheet.getCell(currentRowIdx, 5).value = formatDate(rev.enforcementDate);
 
-      lineDiffs.forEach((part) => {
-        if (part.added) {
-          if (pendingAdded) flush();
-          pendingAdded = part;
-        } else if (part.removed) {
-          if (pendingRemoved) flush();
-          pendingRemoved = part;
-        } else {
+          const lineDiffs = diff.diffLines(bText, aText);
+          const beforeRichText: any[] = [];
+          const afterRichText: any[] = [];
+
+          let pendingRemoved: diff.Change | null = null;
+          let pendingAdded: diff.Change | null = null;
+
+          const flush = () => {
+            if (pendingRemoved || pendingAdded) {
+              const bPart = pendingRemoved ? pendingRemoved.value.replace(/\n$/, '') : "";
+              const aPart = pendingAdded ? pendingAdded.value.replace(/\n$/, '') : "";
+
+              const wordDiffs = diff.diffWordsWithSpace(bPart, aPart);
+              
+              if (bPart) {
+                wordDiffs.forEach(part => {
+                  if (part.added) return;
+                  beforeRichText.push({
+                    text: part.value,
+                    font: part.removed ? { color: { argb: "FFe11d48" } } : undefined
+                  });
+                });
+                beforeRichText.push({ text: '\n' });
+              } else if (pendingRemoved) { 
+                 beforeRichText.push({ text: '<신 설>\n', font: { color: { argb: "FFe11d48" } } });
+              }
+
+              if (aPart) {
+                wordDiffs.forEach(part => {
+                  if (part.removed) return;
+                  afterRichText.push({
+                    text: part.value,
+                    font: part.added ? { color: { argb: "FF2563eb" } } : undefined
+                  });
+                });
+                afterRichText.push({ text: '\n' });
+              } else if (pendingAdded) {
+                afterRichText.push({ text: '<삭 제>\n', font: { color: { argb: "FF5a6e85" } } });
+              }
+
+              pendingRemoved = null;
+              pendingAdded = null;
+            }
+          };
+
+          lineDiffs.forEach((part) => {
+            if (part.added) {
+              if (pendingAdded) flush();
+              pendingAdded = part;
+            } else if (part.removed) {
+              if (pendingRemoved) flush();
+              pendingRemoved = part;
+            } else {
+              flush();
+              const lines = part.value.split('\n');
+              beforeRichText.push({ text: part.value });
+              afterRichText.push({ text: part.value });
+            }
+          });
           flush();
-          const lines = part.value.split('\n');
-          // Add normal text
-          beforeRichText.push({ text: part.value });
-          afterRichText.push({ text: part.value });
-        }
-      });
-      flush();
 
-      // Ensure no trailing newlines from our artificial ones unless they belong
-      const cleanupRichText = (rt: any[]) => {
-          if (rt.length > 0 && rt[rt.length - 1].text === '\n') {
-              rt.pop();
+          const cleanupRichText = (rt: any[]) => {
+              if (rt.length > 0 && rt[rt.length - 1].text === '\n') {
+                  rt.pop();
+              }
+              if (rt.length === 0) {
+                 rt.push({ text: "" });
+              }
+              return { richText: rt };
+          };
+
+          worksheet.getCell(currentRowIdx, 6).value = cleanupRichText(beforeRichText);
+          worksheet.getCell(currentRowIdx, 7).value = cleanupRichText(afterRichText);
+          worksheet.getCell(currentRowIdx, 8).value = rev.departments?.length > 0 ? rev.departments.join(", ") : "N/A";
+          worksheet.getCell(currentRowIdx, 9).value = rev.note || "해당 없음\n(정부 책무)";
+
+          if (rowsToSpan > 1) {
+             for (let col = 1; col <= 9; col++) {
+                 worksheet.mergeCells(currentRowIdx, col, currentRowIdx + rowsToSpan - 1, col);
+             }
           }
-          return { richText: rt };
-      };
 
-      worksheet.getCell(currentRowIdx, 6).value = cleanupRichText(beforeRichText);
-      worksheet.getCell(currentRowIdx, 7).value = cleanupRichText(afterRichText);
-      worksheet.getCell(currentRowIdx, 8).value = rev.departments?.length > 0 ? rev.departments.join(", ") : "N/A";
-      worksheet.getCell(currentRowIdx, 9).value = rev.note || "해당 없음\n(정부 책무)";
+          for (let r = currentRowIdx; r < currentRowIdx + rowsToSpan; r++) {
+             const targetRow = worksheet.getRow(r);
+             targetRow.height = heightPerRow; 
+             for (let c = 1; c <= 9; c++) {
+                 const cell = targetRow.getCell(c);
+                 cell.alignment = { 
+                     vertical: "top", 
+                     horizontal: (c === 6 || c === 7 || c === 1) ? "left" : "center",
+                     wrapText: true 
+                 };
+                 cell.border = {
+                     top: { style: "thin", color: { argb: "FF000000" } },
+                     left: { style: "thin", color: { argb: "FF000000" } },
+                     bottom: { style: "thin", color: { argb: "FF000000" } },
+                     right: { style: "thin", color: { argb: "FF000000" } }
+                 };
+             }
+          }
 
-      // 병합 처리
-      if (rowsToSpan > 1) {
-         for (let col = 1; col <= 9; col++) {
-             worksheet.mergeCells(currentRowIdx, col, currentRowIdx + rowsToSpan - 1, col);
-         }
+          currentRowIdx += rowsToSpan;
       }
+    });
 
-      // 스타일 적용 (병합된 전체 범위에 적용해야 테두리가 제대로 나옴)
-      for (let r = currentRowIdx; r < currentRowIdx + rowsToSpan; r++) {
-         const targetRow = worksheet.getRow(r);
-         targetRow.height = heightPerRow; // 행 높이 지정
-         for (let c = 1; c <= 9; c++) {
-             const cell = targetRow.getCell(c);
-             cell.alignment = { 
-                 vertical: "top", 
-                 horizontal: (c === 6 || c === 7 || c === 1) ? "left" : "center",
-                 wrapText: true 
-             };
-             cell.border = {
-                 top: { style: "thin", color: { argb: "FF000000" } },
-                 left: { style: "thin", color: { argb: "FF000000" } },
-                 bottom: { style: "thin", color: { argb: "FF000000" } },
-                 right: { style: "thin", color: { argb: "FF000000" } }
-             };
-         }
-      }
+    // 입법예고 추가
+    notices.forEach((notice) => {
+        const title = this.sanitizeInput(notice.title);
+        const content = this.sanitizeInput(notice.content);
+        const startDate = notice.startDate ? notice.startDate.replace(/-/g, '.') : "-";
+        const endDate = notice.endDate ? notice.endDate.replace(/-/g, '.') : "-";
+        
+        // 엑셀 최대 행 높이 한계 고려
+        const calcLines = (text: string, width: number) => {
+            if (!text) return 1;
+            const lines = text.split('\n');
+            let totalLines = 0;
+            lines.forEach(line => {
+                totalLines += Math.max(1, Math.ceil(line.length / (width * 0.7)));
+            });
+            return totalLines;
+        };
+        const contentLines = calcLines(content, 55);
+        const rowsToSpan = Math.max(1, Math.ceil(contentLines / 27));
+        const heightPerRow = Math.min(409, Math.ceil((contentLines * 15) / rowsToSpan) + 15);
 
-      currentRowIdx += rowsToSpan;
+        worksheet.getCell(currentRowIdx, 1).value = title;
+        worksheet.getCell(currentRowIdx, 2).value = "입법예고";
+        worksheet.getCell(currentRowIdx, 3).value = notice.department || "-";
+        worksheet.getCell(currentRowIdx, 4).value = startDate;
+        worksheet.getCell(currentRowIdx, 5).value = endDate;
+        
+        worksheet.getCell(currentRowIdx, 6).value = ""; // 변경 전 (입법예고에는 명확한 before가 없을 수 있음)
+        worksheet.getCell(currentRowIdx, 7).value = content;
+        
+        worksheet.getCell(currentRowIdx, 8).value = "-";
+        worksheet.getCell(currentRowIdx, 9).value = notice.status || "-";
+
+        if (rowsToSpan > 1) {
+            for (let col = 1; col <= 9; col++) {
+                worksheet.mergeCells(currentRowIdx, col, currentRowIdx + rowsToSpan - 1, col);
+            }
+        }
+
+        for (let r = currentRowIdx; r < currentRowIdx + rowsToSpan; r++) {
+             const targetRow = worksheet.getRow(r);
+             targetRow.height = heightPerRow; 
+             for (let c = 1; c <= 9; c++) {
+                 const cell = targetRow.getCell(c);
+                 cell.alignment = { 
+                     vertical: "top", 
+                     horizontal: (c === 6 || c === 7 || c === 1) ? "left" : "center",
+                     wrapText: true 
+                 };
+                 cell.border = {
+                     top: { style: "thin", color: { argb: "FF000000" } },
+                     left: { style: "thin", color: { argb: "FF000000" } },
+                     bottom: { style: "thin", color: { argb: "FF000000" } },
+                     right: { style: "thin", color: { argb: "FF000000" } }
+                 };
+             }
+        }
+        
+        currentRowIdx += rowsToSpan;
     });
 
     // 파일 생성 및 다운로드

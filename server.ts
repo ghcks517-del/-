@@ -4,7 +4,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 
 async function startServer() {
-  const PORT = process.env.PORT || 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

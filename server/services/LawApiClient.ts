@@ -61,7 +61,7 @@ export class LawApiClient {
     let diffData = "";
 
     try {
-      const response = await axios.get(`${BASE_URL}?target=law&query=${encodeURIComponent(lawName)}&type=XML&OC=${OC}`);
+      const response = await axios.get(`${BASE_URL}?target=eflaw&query=${encodeURIComponent(lawName)}&type=XML&OC=${OC}`);
       const parsed = await parseStringPromise(response.data);
       
       if (parsed.Response && parsed.Response.result && parsed.Response.result[0].includes("사용자 정보 검증에 실패")) {
@@ -72,7 +72,7 @@ export class LawApiClient {
           revisionType,
           beforeText: `[OpenAPI 연동 실패]\n등록하신 OpenAPI 키(LAW_API_OC) 또는 IP가 국가법령정보센터에 등록되지 않았습니다.\n(오류메시지: ${parsed.Response.msg?.[0] || '사용자 정보 검증에 실패하였습니다.'})`,
           afterText: `[OpenAPI 연동 실패]\n국가법령정보센터에서 OpenAPI 키와 서버 IP(Vercel 서버 IP)를 다시 확인해 주세요.`,
-          sourceUrl: "http://www.law.go.kr", collectedAt: new Date().toISOString()
+          sourceUrl: "http://www.law.go.kr", collectedAt: new Date().toISOString(), diffData: ""
          }];
       }
 
@@ -82,7 +82,9 @@ export class LawApiClient {
 
         const matchedLaw = parsed.LawSearch.law.find((l: any) => {
            const pDate = l['공포일자']?.[0] || "";
-           return pDate.startsWith(`${targetYearStr}${targetMonthStr}`);
+           const actualName = l['법령명한글']?.[0] || "";
+           const revType = l['제개정구분명']?.[0] || "";
+           return pDate.startsWith(`${targetYearStr}${targetMonthStr}`) && actualName.replace(/ /g, '') === lawName.replace(/ /g, '') && revType.includes("일부개정");
         });
 
         if (!matchedLaw) {
@@ -111,6 +113,7 @@ export class LawApiClient {
               if (!str) return "";
               return str.replace(/<신\s*설>/gi, '[신설]')
                         .replace(/<생\s*략>/gi, '[생략]')
+                        .replace(/<삭\s*제>/gi, '[삭제]')
                         .replace(/<P>/gi, '')
                         .replace(/<\/P>/gi, '\n')
                         .replace(/&nbsp;/g, ' ')
@@ -119,17 +122,46 @@ export class LawApiClient {
                         .trim();
             };
 
-            for (const j of oldJomuns) {
-              beforeText += cleanHtml(j._) + "\n\n";
-            }
-            for (const j of newJomuns) {
-              afterText += cleanHtml(j._) + "\n\n";
+            const cleanHtmlBasic = (str: string) => {
+              if (!str) return "";
+              return str.replace(/<[^>]+>/g, '').trim();
+            };
+
+            const length = Math.max(oldJomuns.length, newJomuns.length);
+            for (let i = 0; i < length; i++) {
+              let oldStr = oldJomuns[i]?._ || "";
+              let newStr = newJomuns[i]?._ || "";
+              
+              if (/<신\s*설>/i.test(oldStr)) {
+                 let cleanNew = cleanHtmlBasic(newStr);
+                 let label = "신설";
+                 if (/^제\d+조/.test(cleanNew)) label = "조항 신설";
+                 else if (/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮]/.test(cleanNew)) label = "항 신설";
+                 else if (/^\d+\./.test(cleanNew)) label = "호 신설";
+                 else if (/^[가-하]\./.test(cleanNew)) label = "목 신설";
+                 
+                 oldStr = oldStr.replace(/<신\s*설>/gi, `[${label}]`);
+              }
+
+              if (/<삭\s*제>/i.test(newStr)) {
+                 let cleanOld = cleanHtmlBasic(oldStr);
+                 let label = "삭제";
+                 if (/^제\d+조/.test(cleanOld)) label = "조항 삭제";
+                 else if (/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮]/.test(cleanOld)) label = "항 삭제";
+                 else if (/^\d+\./.test(cleanOld)) label = "호 삭제";
+                 else if (/^[가-하]\./.test(cleanOld)) label = "목 삭제";
+                 
+                 newStr = newStr.replace(/<삭\s*제>/gi, `[${label}]`);
+              }
+
+              beforeText += cleanHtml(oldStr) + "\n\n";
+              afterText += cleanHtml(newStr) + "\n\n";
             }
             beforeText = beforeText.trim();
             afterText = afterText.trim();
           } else {
             // Fallback to detail
-            const detailRes = await axios.get(`${DETAIL_URL}?target=law&ID=${sourceLawId}&type=XML&OC=${OC}`);
+            const detailRes = await axios.get(`${DETAIL_URL}?target=law&ID=${sourceLawId}&MST=${mst}&type=XML&OC=${OC}`);
             const detailParsed = await parseStringPromise(detailRes.data);
             if (detailParsed['법령'] && detailParsed['법령']['조문']) {
               const jomuns = detailParsed['법령']['조문'][0]['조문단위'] || [];
@@ -169,7 +201,7 @@ export class LawApiClient {
         revisionType,
         beforeText,
         afterText,
-        sourceUrl: `https://www.law.go.kr/lsInfoP.do?lsiSeq=${sourceLawId}`,
+        diffData, sourceUrl: `https://www.law.go.kr/lsInfoP.do?lsiSeq=${sourceLawId}`,
         collectedAt: new Date().toISOString()
       }
     ];

@@ -55,6 +55,7 @@ export interface AISummary {
   changedRequirements: string[];
   reviewPoints: string[];
   departmentCheckpoints: string[];
+  responsePlan?: string;
 }
 
 export interface SyncRun {
@@ -111,3 +112,17 @@ export const REVIEW_STATUS_LABELS: Record<string, string> = {
   NO_ACTION_NEEDED: "조치 불필요",
   RECHECK_NEEDED: "재확인 필요",
 };
+
+export interface LegislativeNotice {
+  id: string;
+  noticeId: string;
+  title: string;
+  department: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  content: string;
+  status: string;
+  sourceUrl: string;
+  collectedAt: string;
+  createdAt: string;
+}

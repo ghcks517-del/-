@@ -4,12 +4,13 @@
  */
 
 import { createBrowserRouter, RouterProvider, Outlet, Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, Book, History, Settings as SettingsIcon, FileText, Download } from "lucide-react";
+import { LayoutDashboard, Book, History, Settings as SettingsIcon, FileText, Download, Megaphone } from "lucide-react";
 import clsx from "clsx";
 import Dashboard from "./pages/Dashboard";
 import RegulationList from "./pages/RegulationList";
 import RevisionHistory from "./pages/RevisionHistory";
 import SyncHistory from "./pages/SyncHistory";
+import LegislativeNoticeList from "./pages/LegislativeNoticeList";
 import SettingsPage from "./pages/Settings";
 
 const Sidebar = () => {
@@ -18,6 +19,7 @@ const Sidebar = () => {
     { name: "대시보드", path: "/", icon: LayoutDashboard },
     { name: "법규 관리", path: "/regulations", icon: Book },
     { name: "개정 내역", path: "/revisions", icon: FileText },
+    { name: "입법예고", path: "/legislative-notices", icon: Megaphone },
     { name: "수집 실행 이력", path: "/sync-history", icon: History },
     { name: "설정", path: "/settings", icon: SettingsIcon },
   ];
@@ -110,6 +112,7 @@ const router = createBrowserRouter([
       { index: true, element: <Dashboard /> },
       { path: "regulations", element: <RegulationList /> },
       { path: "revisions", element: <RevisionHistory /> },
+      { path: "legislative-notices", element: <LegislativeNoticeList /> },
       { path: "sync-history", element: <SyncHistory /> },
       { path: "settings", element: <SettingsPage /> },
     ],
