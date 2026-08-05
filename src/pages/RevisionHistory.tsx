@@ -151,6 +151,13 @@ const handleReanalyze = async () => {
             <p className="text-sm text-slate-500 mt-1">수집된 법규 개정 사항을 확인하고 비교합니다.</p>
           </div>
           <div className="flex gap-2">
+            <button 
+              onClick={handleExport}
+              className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 transition-colors flex items-center gap-2 font-medium text-sm shadow-sm"
+            >
+              <Download className="w-4 h-4" />
+              엑셀 다운로드
+            </button>
             {selectedItems.size > 0 && (
               <button onClick={() => setShowDeleteConfirm(true)} className="bg-red-50 border border-red-200 text-red-600 px-4 py-2 rounded-md hover:bg-red-100 transition-colors flex items-center gap-2 font-medium text-sm shadow-sm">
                 <Trash2 className="w-4 h-4" />
