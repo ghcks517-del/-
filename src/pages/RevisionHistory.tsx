@@ -347,14 +347,53 @@ const handleReanalyze = async () => {
 }
 
 function DiffViewer({ before, after, diffData }: { before: string; after: string; diffData?: string }) {
-  let parsedPairs = null;
-  if (diffData) {
-    try {
-      parsedPairs = JSON.parse(diffData);
-    } catch (e) {}
-  }
+  const replaceRegex = /\[(조항|항|호|목|장|편|절|관|본조)\s*신설\]/g;
+  const cleanBefore = before ? before.replace(replaceRegex, "[신설]") : "";
+  const cleanAfter = after ? after.replace(replaceRegex, "[신설]") : "";
 
-  if (parsedPairs && Array.isArray(parsedPairs) && parsedPairs.length > 0) {
+  const renderHighlightedText = (text: string, isAdded: boolean) => {
+    if (!text || !text.trim()) {
+      return isAdded ? <span className="text-slate-500">&lt;삭 제&gt;</span> : <span className="text-[#e11d48]">&lt;신 설&gt;</span>;
+    }
+    const pureText = text.replace(/\{\||\|\}/g, '').trim();
+    if (pureText === "&lt;신 설&gt;" || pureText === "[신설]") return <span className="text-[#e11d48]">&lt;신 설&gt;</span>;
+    if (pureText === "&lt;생 략&gt;" || pureText === "[생략]" || pureText === "[삭제]") return <span className="text-slate-500">{pureText.replace('[', '&lt;').replace(']', '&gt;')}</span>;
+
+    if (!text.includes('{|') && !text.includes('|}')) {
+      return <span>{text}</span>;
+    }
+
+    const parts = text.split(/\{\||\|\}/);
+    return parts.map((part, index) => {
+       if (index % 2 === 1) {
+           return <span key={index} className={isAdded ? "text-[#2563eb] font-medium bg-blue-50" : "text-[#e11d48] line-through bg-red-50"}>{part}</span>;
+       }
+       return <span key={index}>{part}</span>;
+    });
+  };
+
+  const hasHighlightMarkers = cleanBefore.includes('{|') || cleanAfter.includes('{|');
+
+  if (hasHighlightMarkers) {
+    const bSections = cleanBefore.split('\n\n').map(s => s.trim());
+    const aSections = cleanAfter.split('\n\n').map(s => s.trim());
+    const maxLen = Math.max(bSections.length, aSections.length);
+    const rows = [];
+    for (let i = 0; i < maxLen; i++) {
+       const bText = bSections[i] || "";
+       const aText = aSections[i] || "";
+       if (!bText && !aText) continue;
+       rows.push(
+          <div className="grid grid-cols-2 border-b border-slate-300 last:border-0" key={i}>
+            <div className="p-4 text-sm leading-[1.7] whitespace-pre-wrap text-slate-800 border-r border-slate-300 break-keep">
+              {renderHighlightedText(bText, false)}
+            </div>
+            <div className="p-4 text-sm leading-[1.7] whitespace-pre-wrap text-slate-800 break-keep">
+              {renderHighlightedText(aText, true)}
+            </div>
+          </div>
+       );
+    }
     return (
       <div className="border border-slate-300 rounded-lg overflow-hidden flex flex-col shadow-sm bg-white">
         <div className="grid grid-cols-2 bg-[#f8f9fa] border-b border-slate-300">
@@ -362,42 +401,14 @@ function DiffViewer({ before, after, diffData }: { before: string; after: string
           <div className="p-3 text-center text-sm font-bold text-slate-700">개정안</div>
         </div>
         <div className="flex flex-col">
-          {parsedPairs.map((pair, idx) => {
-             // to show diffs inside the pair, we could do diffWordsWithSpace, but usually oldAndNew format doesn't have exact same structure.
-             // Let's use diffWordsWithSpace just in case they are similar, or just render it.
-             const oldText = pair.old || "";
-             const newText = pair.new || "";
-             
-             // If old and new are exactly the same or just spacing diff, we can just show it. 
-             // But actually showing word diffs is better.
-             const wordDiffs = diff.diffWordsWithSpace(oldText, newText);
-             
-             return (
-               <div className="grid grid-cols-2 border-b border-slate-300 last:border-0" key={idx}>
-                 <div className="p-4 text-sm leading-[1.7] whitespace-pre-wrap text-slate-800 border-r border-slate-300 break-keep">
-                   {oldText === "&lt;신 설&gt;" ? <span className="text-[#e11d48]">&lt;신 설&gt;</span> : 
-                     (oldText ? wordDiffs.map((part, i) => {
-                       if (part.added) return null;
-                       return <span key={i} className={part.removed ? "text-[#e11d48] line-through bg-red-50" : ""}>{part.value}</span>;
-                     }) : <span className="text-[#e11d48]">&lt;신 설&gt;</span>)}
-                 </div>
-                 <div className="p-4 text-sm leading-[1.7] whitespace-pre-wrap text-slate-800 break-keep">
-                   {newText === "&lt;생 략&gt;" ? <span className="text-slate-500">&lt;생 략&gt;</span> :
-                     (newText ? wordDiffs.map((part, i) => {
-                       if (part.removed) return null;
-                       return <span key={i} className={part.added ? "text-[#2563eb] font-medium bg-blue-50" : ""}>{part.value}</span>;
-                     }) : <span className="text-slate-500">&lt;삭 제&gt;</span>)}
-                 </div>
-               </div>
-             );
-          })}
+          {rows}
         </div>
-    </div>
-  );
+      </div>
+    );
+  }
 
-}
   // fallback to generic diffLines
-  const lineDiffs = diff.diffLines(before, after);
+  const lineDiffs = diff.diffLines(cleanBefore, cleanAfter);
   
   
   

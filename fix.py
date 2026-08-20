@@ -1,51 +1,10 @@
-import axios from "axios";
-import { parseStringPromise } from "xml2js";
+import re
 
-const BASE_URL = "http://www.law.go.kr/DRF/lawSearch.do";
-const DETAIL_URL = "http://www.law.go.kr/DRF/lawService.do";
+with open("server/services/LawApiClient.ts", "r") as f:
+    content = f.read()
 
-export interface NormalizedLawRevision {
-  sourceLawId: string;
-  lawName: string;
-  regulationType: "LAW" | "ADMIN_RULE" | "LOCAL_RULE" | "OTHER";
-  promulgationDate: string | null;
-  enforcementDate: string | null;
-  revisionId: string;
-  revisionType: string | null;
-  beforeText: string;
-  afterText: string;
-  diffData: string;
-  sourceUrl: string | null;
-  collectedAt: string;
-}
-
-export class LawApiClient {
-  getOC() {
-    // Vercel 환경에서는 유동 IP를 사용하므로 개인 API 키(LAW_API_OC) 사용 시 IP 검증에 실패합니다.
-    // 따라서 IP 검증을 하지 않는 테스트용 키('test')를 고정으로 사용하도록 수정합니다.
-    return "test";
-  }
-
-  async searchLaw(keyword: string) {
-    const OC = this.getOC();
-    try {
-      const response = await axios.get(`${BASE_URL}?target=law&query=${encodeURIComponent(keyword)}&type=XML&OC=${OC}`);
-      const parsed = await parseStringPromise(response.data);
-      if (parsed.LawSearch && parsed.LawSearch.law) {
-        return parsed.LawSearch.law.map((l: any) => ({
-          lawId: l['법령ID']?.[0] || "",
-          lawName: l['법령명한글']?.[0] || keyword,
-          promulgationDate: l['공포일자']?.[0] || "",
-          enforcementDate: l['시행일자']?.[0] || ""
-        }));
-      }
-    } catch (err) {
-      console.error("searchLaw api error", err);
-    }
-    return [];
-  }
-
-  async getRecentRevisions(lawName: string, regulationType: string, targetYear?: number, targetMonth?: number): Promise<NormalizedLawRevision[]> {
+# I will just write a new version of the function and replace it entirely using regex.
+new_func = """  async getRecentRevisions(lawName: string, regulationType: string, targetYear?: number, targetMonth?: number): Promise<NormalizedLawRevision[]> {
     const OC = this.getOC();
     const now = new Date();
     const yyyy = targetYear || now.getFullYear();
@@ -68,8 +27,8 @@ export class LawApiClient {
           promulgationDate, enforcementDate,
           revisionId: `rev-${yyyy}${mm}${dd}-${Math.floor(Math.random()*1000)}`,
           revisionType,
-          beforeText: `[OpenAPI 연동 실패]\n등록하신 OpenAPI 키(LAW_API_OC) 또는 IP가 국가법령정보센터에 등록되지 않았습니다.\n(오류메시지: ${parsed.Response.msg?.[0] || '사용자 정보 검증에 실패하였습니다.'})`,
-          afterText: `[OpenAPI 연동 실패]\n국가법령정보센터에서 OpenAPI 키와 서버 IP(Vercel 서버 IP)를 다시 확인해 주세요.`,
+          beforeText: `[OpenAPI 연동 실패]\\n등록하신 OpenAPI 키(LAW_API_OC) 또는 IP가 국가법령정보센터에 등록되지 않았습니다.\\n(오류메시지: ${parsed.Response.msg?.[0] || '사용자 정보 검증에 실패하였습니다.'})`,
+          afterText: `[OpenAPI 연동 실패]\\n국가법령정보센터에서 OpenAPI 키와 서버 IP(Vercel 서버 IP)를 다시 확인해 주세요.`,
           sourceUrl: "http://www.law.go.kr", collectedAt: new Date().toISOString(), diffData: ""
          }];
       }
@@ -115,10 +74,10 @@ export class LawApiClient {
                 return str.replace(/<신\s*설>/gi, '[신설]')
                           .replace(/<생\s*략>/gi, '[생략]')
                           .replace(/<삭\s*제>/gi, '[삭제]')
-                          .replace(/<P>/gi, '{|')
-                          .replace(/<\/P>/gi, '|}\n')
+                          .replace(/<P>/gi, '')
+                          .replace(/<\\/P>/gi, '\\n')
                           .replace(/&nbsp;/g, ' ')
-                          .replace(/<br\s*\/?>/gi, '\n')
+                          .replace(/<br\s*\\/?>/gi, '\\n')
                           .replace(/<[^>]+>/g, '')
                           .trim();
               };
@@ -156,8 +115,8 @@ export class LawApiClient {
                 }
 
                 if (oldStr || newStr) {
-                  mBeforeText += cleanHtml(oldStr) + "\n\n";
-                  mAfterText += cleanHtml(newStr) + "\n\n";
+                  mBeforeText += cleanHtml(oldStr) + "\\n\\n";
+                  mAfterText += cleanHtml(newStr) + "\\n\\n";
                 }
               }
               mBeforeText = mBeforeText.trim() || "변경 전 내용 없음";
@@ -169,14 +128,14 @@ export class LawApiClient {
               
               if (detailParsed['법령'] && detailParsed['법령']['조문']) {
                 const jomuns = detailParsed['법령']['조문'][0]['조문단위'] || [];
-                let content = `[${actualLawName} 개정 본문]\n`;
+                let content = `[${actualLawName} 개정 본문]\\n`;
                 for (let i = 0; i < Math.min(10, jomuns.length); i++) {
                   if (jomuns[i]['조문내용'] && jomuns[i]['조문내용'][0]) {
-                     content += jomuns[i]['조문내용'][0].trim() + '\n';
+                     content += jomuns[i]['조문내용'][0].trim() + '\\n';
                   }
                 }
                 mAfterText = content;
-                mBeforeText = `[이전 법령 조회]\n국가법령정보센터 OpenAPI에서는 이전 법령 본문을 별도로 조회하는 기능이 제한적입니다.\n해당 개정안의 시행 전 조문은 법제처 홈페이지에서 확인 가능합니다.\n\n개정일자: ${mPromulgationDate}\n시행일자: ${mEnforcementDate}`;
+                mBeforeText = `[이전 법령 조회]\\n국가법령정보센터 OpenAPI에서는 이전 법령 본문을 별도로 조회하는 기능이 제한적입니다.\\n해당 개정안의 시행 전 조문은 법제처 홈페이지에서 확인 가능합니다.\\n\\n개정일자: ${mPromulgationDate}\\n시행일자: ${mEnforcementDate}`;
               } else {
                  mBeforeText = "신구조문 대비표 제공 안 됨 (원문 참고)";
                  mAfterText = "신구조문 대비표 제공 안 됨 (원문 참고)";
@@ -225,3 +184,11 @@ export class LawApiClient {
     }
   }
 }
+"""
+
+start_idx = content.find("  async getRecentRevisions")
+if start_idx != -1:
+    content = content[:start_idx] + new_func
+
+with open("server/services/LawApiClient.ts", "w") as f:
+    f.write(content)

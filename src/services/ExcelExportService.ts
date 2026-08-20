@@ -2,12 +2,28 @@ import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import * as diff from "diff";
 import { Revision } from "../types";
+import { api } from "../api";
 
 export class ExcelExportService {
   static async exportRevisions(revisions: any[], notices: any[] = [], filenamePrefix = "법규개정현황") {
     if ((!revisions || revisions.length === 0) && (!notices || notices.length === 0)) {
       alert("다운로드할 데이터가 없습니다.");
       return;
+    }
+
+    let agencyMap = new Map<string, string>();
+    try {
+       const regulations = await api.regulations.list();
+       regulations.forEach(reg => {
+           if (reg.lawName) {
+               agencyMap.set(reg.lawName.trim(), reg.responsibleAgency || "-");
+           }
+           if (reg.id) {
+               agencyMap.set(reg.id, reg.responsibleAgency || "-");
+           }
+       });
+    } catch (e) {
+       console.error("Failed to fetch regulations for agency mapping", e);
     }
 
     const workbook = new ExcelJS.Workbook();
@@ -100,7 +116,7 @@ export class ExcelExportService {
           
           for (const line of lines) {
               // 제O조, 제O조의O, 부칙, [별표] 등으로 시작하는지 확인
-              const isNewSection = /^\s*(제\d+조(?:의\d+)?|부칙|\[별표)/.test(line);
+              const isNewSection = /^\s*(제\d+조(?:의\d+)?|부칙|\[별표|\[조항 신설\]|\[장 신설\]|\[본조 신설\]|\[편 신설\]|\[절 신설\]|\[관 신설\])/.test(line);
               if (isNewSection) {
                   if (currentBlock) blocks.push(currentBlock.trim());
                   currentBlock = line;
@@ -128,17 +144,19 @@ export class ExcelExportService {
       const maxSections = Math.max(beforeSections.length, afterSections.length, 1);
 
       let agency = "-";
-      if (rev.lawName.includes("기본법 시행령") || rev.lawName.includes("탄소중립")) agency = "기후에너지환경부";
-      else if (rev.lawName.includes("환경") || rev.lawName.includes("폐기물") || rev.lawName.includes("수도")) agency = "환경부";
-      else if (rev.lawName.includes("가스") || rev.lawName.includes("에너지") || rev.lawName.includes("전기")) agency = "산업통상자원부";
-      else if (rev.lawName.includes("소방") || rev.lawName.includes("화재") || rev.lawName.includes("위험물")) agency = "소방청";
-      else if (rev.lawName.includes("건설")) agency = "국토교통부";
-      else if (rev.lawName.includes("안전보건") || rev.lawName.includes("산업안전")) agency = "고용노동부";
+      if (rev.regulationId && agencyMap.has(rev.regulationId)) {
+          agency = agencyMap.get(rev.regulationId)!;
+      } else if (rev.lawName && agencyMap.has(rev.lawName.trim())) {
+          agency = agencyMap.get(rev.lawName.trim())!;
+      }
 
       for (let i = 0; i < maxSections; i++) {
-          const bText = beforeSections[i] || "";
-          const aText = afterSections[i] || "";
+          let bText = beforeSections[i] || "";
+          let aText = afterSections[i] || "";
           
+          bText = bText.replace(/\[(조항|항|호|목|장|편|절|관|본조)\s*신설\]/g, "[신설]");
+          aText = aText.replace(/\[(조항|항|호|목|장|편|절|관|본조)\s*신설\]/g, "[신설]");
+
           const calcLines = (text: string, width: number) => {
               if (!text) return 1;
               const lines = text.split('\n');
@@ -169,10 +187,36 @@ export class ExcelExportService {
           worksheet.getCell(currentRowIdx, 4).value = formatDate(rev.promulgationDate);
           worksheet.getCell(currentRowIdx, 5).value = formatDate(rev.enforcementDate);
 
-          const lineDiffs = diff.diffLines(bText, aText);
           const beforeRichText: any[] = [];
           const afterRichText: any[] = [];
 
+          const hasHighlightMarkers = bText.includes('{|') || aText.includes('{|');
+          if (hasHighlightMarkers) {
+              const parseRichText = (text: string, isAdded: boolean) => {
+                  if (!text || !text.trim()) {
+                     return [{ text: isAdded ? '<삭 제>\n' : '<신 설>\n', font: { color: { argb: isAdded ? "FF5a6e85" : "FFe11d48" } } }];
+                  }
+                  const pureText = text.replace(/\{\||\|\}/g, '').trim();
+                  if (pureText === "[신설]" || pureText === "<신 설>") return [{ text: '<신 설>\n', font: { color: { argb: "FFe11d48" } } }];
+                  if (pureText === "[생략]" || pureText === "[삭제]" || pureText === "<생 략>") return [{ text: pureText.replace('[', '<').replace(']', '>') + '\n', font: { color: { argb: "FF5a6e85" } } }];
+
+                  const parts = text.split(/\{\||\|\}/);
+                  const richText: any[] = [];
+                  parts.forEach((part, index) => {
+                      if (!part) return;
+                      if (index % 2 === 1) {
+                          richText.push({ text: part, font: { color: { argb: isAdded ? "FF2563eb" : "FFe11d48" } } });
+                      } else {
+                          richText.push({ text: part });
+                      }
+                  });
+                  richText.push({ text: '\n' });
+                  return richText;
+              };
+              beforeRichText.push(...parseRichText(bText, false));
+              afterRichText.push(...parseRichText(aText, true));
+          } else {
+          const lineDiffs = diff.diffLines(bText, aText);
           let pendingRemoved: diff.Change | null = null;
           let pendingAdded: diff.Change | null = null;
 
@@ -229,6 +273,7 @@ export class ExcelExportService {
             }
           });
           flush();
+          }
 
           const cleanupRichText = (rt: any[]) => {
               if (rt.length > 0 && rt[rt.length - 1].text === '\n') {

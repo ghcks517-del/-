@@ -1,7 +1,7 @@
 import { LawApiClient } from "./LawApiClient.js";
 import { RegulationRepository } from "../repositories.js";
 import { getDb } from "../firebase.js";
-import { collection, addDoc, doc, writeBatch } from "firebase/firestore";
+import { collection, addDoc, doc, writeBatch, query, where, getDocs } from "firebase/firestore";
 
 import { summarizeRevision } from "../gemini.js";
 import { SyncRun, SyncRunItem, Revision, LegislativeNotice } from "../../src/types/index.js";
@@ -51,16 +51,40 @@ export class SyncService {
             status = "UNCHANGED";
             unchangedCount++;
           } else {
-            status = "SUCCESS";
-            changedCount++;
-            
-            // For each revision, optionally call Gemini to summarize
-            const batch = writeBatch(db);
-            
+            // Deduplication
+            const existingQ = query(collection(db, "revisions"), where("lawName", "==", reg.lawName));
+            const existingSnap = await getDocs(existingQ);
+            const existingRevisions = existingSnap.docs.map(d => d.data());
+
+            const uniqueRevisions: typeof revisions = [];
             for (const rev of revisions) {
-              const aiSummary = await summarizeRevision(rev.beforeText, rev.afterText);
+              const isDup = uniqueRevisions.some(u => u.promulgationDate === rev.promulgationDate && u.beforeText === rev.beforeText && u.afterText === rev.afterText);
+              if (!isDup) uniqueRevisions.push(rev);
+            }
+
+            const newRevisions = uniqueRevisions.filter(rev => {
+              const isDuplicate = existingRevisions.some(e => 
+                e.promulgationDate === rev.promulgationDate &&
+                e.beforeText === rev.beforeText &&
+                e.afterText === rev.afterText
+              );
+              return !isDuplicate;
+            });
+
+            if (newRevisions.length === 0) {
+              status = "UNCHANGED";
+              unchangedCount++;
+            } else {
+              status = "SUCCESS";
+              changedCount++;
               
-              const revisionDocRef = doc(collection(db, "revisions"));
+              // For each revision, optionally call Gemini to summarize
+              const batch = writeBatch(db);
+              
+              for (const rev of newRevisions) {
+                const aiSummary = await summarizeRevision(rev.beforeText, rev.afterText);
+                
+                const revisionDocRef = doc(collection(db, "revisions"));
               batch.set(revisionDocRef, {
                 regulationId: reg.id,
                 sourceLawId: rev.sourceLawId,
@@ -88,6 +112,7 @@ export class SyncService {
             }
             
             await batch.commit();
+            }
           }
 
           successCount++;
