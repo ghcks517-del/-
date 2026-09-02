@@ -59,26 +59,53 @@ export class LawApiClient {
     let diffData = "";
 
     try {
-      const response = await axios.get(`${BASE_URL}?target=eflaw&query=${encodeURIComponent(lawName)}&type=XML&OC=${OC}&display=100`);
-      const parsed = await parseStringPromise(response.data);
+      const q = encodeURIComponent(lawName);
       
-      if (parsed.Response && parsed.Response.result && parsed.Response.result[0].includes("사용자 정보 검증에 실패")) {
+      const [resLaw, resEflaw] = await Promise.all([
+         axios.get(`${BASE_URL}?target=law&query=${q}&type=XML&OC=${OC}&display=100`),
+         axios.get(`${BASE_URL}?target=eflaw&query=${q}&type=XML&OC=${OC}&display=100`)
+      ]);
+      
+      const [parsedLaw, parsedEflaw] = await Promise.all([
+         parseStringPromise(resLaw.data),
+         parseStringPromise(resEflaw.data)
+      ]);
+      
+      let errorMsg = null;
+      if (parsedLaw.Response && parsedLaw.Response.result && parsedLaw.Response.result[0].includes("사용자 정보 검증에 실패")) {
+          errorMsg = parsedLaw.Response.msg?.[0];
+      } else if (parsedEflaw.Response && parsedEflaw.Response.result && parsedEflaw.Response.result[0].includes("사용자 정보 검증에 실패")) {
+          errorMsg = parsedEflaw.Response.msg?.[0];
+      }
+      
+      if (errorMsg) {
          return [{
           sourceLawId, lawName, regulationType: regulationType as any,
           promulgationDate, enforcementDate,
           revisionId: `rev-${yyyy}${mm}${dd}-${Math.floor(Math.random()*1000)}`,
           revisionType,
-          beforeText: `[OpenAPI 연동 실패]\n등록하신 OpenAPI 키(LAW_API_OC) 또는 IP가 국가법령정보센터에 등록되지 않았습니다.\n(오류메시지: ${parsed.Response.msg?.[0] || '사용자 정보 검증에 실패하였습니다.'})`,
+          beforeText: `[OpenAPI 연동 실패]\n등록하신 OpenAPI 키(LAW_API_OC) 또는 IP가 국가법령정보센터에 등록되지 않았습니다.\n(오류메시지: ${errorMsg || '사용자 정보 검증에 실패하였습니다.'})`,
           afterText: `[OpenAPI 연동 실패]\n국가법령정보센터에서 OpenAPI 키와 서버 IP(Vercel 서버 IP)를 다시 확인해 주세요.`,
-          sourceUrl: "http://www.law.go.kr", collectedAt: new Date().toISOString(), diffData: ""
+          sourceUrl: "http://www.law.go.kr", collectedAt: new Date().toISOString(), diffData: "" 
          }];
       }
 
-      if (parsed.LawSearch && parsed.LawSearch.law && parsed.LawSearch.law.length > 0) {
+      let allLaws: any[] = [];
+      if (parsedLaw.LawSearch && parsedLaw.LawSearch.law) allLaws = allLaws.concat(parsedLaw.LawSearch.law);
+      if (parsedEflaw.LawSearch && parsedEflaw.LawSearch.law) allLaws = allLaws.concat(parsedEflaw.LawSearch.law);
+
+      if (allLaws.length > 0) {
+        
+        const uniqueLawsMap = new Map();
+        for (const l of allLaws) {
+            uniqueLawsMap.set(l['법령일련번호']?.[0], l);
+        }
+        allLaws = Array.from(uniqueLawsMap.values());
+
         const targetYearStr = yyyy.toString();
         const targetMonthStr = mm; // already padded
         
-        const matchedLaws = parsed.LawSearch.law.filter((l: any) => {
+        const matchedLaws = allLaws.filter((l: any) => {
            const pDate = l['공포일자']?.[0] || "";
            const actualName = l['법령명한글']?.[0] || "";
            return pDate.startsWith(`${targetYearStr}${targetMonthStr}`) && actualName.replace(/ /g, '') === lawName.replace(/ /g, '');
@@ -106,7 +133,7 @@ export class LawApiClient {
             const oldAndNewRes = await axios.get(`${DETAIL_URL}?target=oldAndNew&ID=${mSourceLawId}&MST=${mst}&type=XML&OC=${OC}`);
             const oldAndNewParsed = await parseStringPromise(oldAndNewRes.data);
             
-            if (oldAndNewParsed.OldAndNewService && oldAndNewParsed.OldAndNewService.구조문목록 && oldAndNewParsed.OldAndNewService.신조문목록) {
+            if (oldAndNewParsed.OldAndNewService && oldAndNewParsed.OldAndNewService.구조문목록 && oldAndNewParsed.OldAndNewService.신조문목록 && oldAndNewParsed.OldAndNewService.신구법존재여부?.[0] !== 'N') {
               const oldJomuns = oldAndNewParsed.OldAndNewService.구조문목록[0].조문 || [];
               const newJomuns = oldAndNewParsed.OldAndNewService.신조문목록[0].조문 || [];
               
@@ -160,26 +187,30 @@ export class LawApiClient {
                   mAfterText += cleanHtml(newStr) + "\n\n";
                 }
               }
+
               mBeforeText = mBeforeText.trim() || "변경 전 내용 없음";
               mAfterText = mAfterText.trim() || "변경 후 내용 없음";
             } else {
-              // Fallback to detail
+              // Fallback to detail using target=law (since target=eflaw is restricted for test OC)
               const detailRes = await axios.get(`${DETAIL_URL}?target=law&ID=${mSourceLawId}&MST=${mst}&type=XML&OC=${OC}`);
               const detailParsed = await parseStringPromise(detailRes.data);
               
               if (detailParsed['법령'] && detailParsed['법령']['조문']) {
                 const jomuns = detailParsed['법령']['조문'][0]['조문단위'] || [];
-                let content = `[${actualLawName} 개정 본문]\n`;
-                for (let i = 0; i < Math.min(10, jomuns.length); i++) {
+                let content = `[${actualLawName} 개정 본문 (신구조문 대비표 미제공)]\n`;
+                for (let i = 0; i < Math.min(15, jomuns.length); i++) {
                   if (jomuns[i]['조문내용'] && jomuns[i]['조문내용'][0]) {
-                     content += jomuns[i]['조문내용'][0].trim() + '\n';
+                     let cleanContent = jomuns[i]['조문내용'][0].trim();
+                     // Apply formatting to make it look nicer even without diff
+                     cleanContent = cleanContent.replace(/<[^>]+>/g, '');
+                     content += cleanContent + '\n';
                   }
                 }
                 mAfterText = content;
-                mBeforeText = `[이전 법령 조회]\n국가법령정보센터 OpenAPI에서는 이전 법령 본문을 별도로 조회하는 기능이 제한적입니다.\n해당 개정안의 시행 전 조문은 법제처 홈페이지에서 확인 가능합니다.\n\n개정일자: ${mPromulgationDate}\n시행일자: ${mEnforcementDate}`;
+                mBeforeText = `[이전 법령 조회 안내]\n국가법령정보센터 OpenAPI에서는 해당 법령의 이전 법령 본문을 별도로 제공하지 않습니다. (타법개정 또는 전부개정 등)\n해당 개정안의 상세 신구조문 대비표는 법제처 홈페이지에서 직접 확인 가능합니다.\n\n개정일자: ${mPromulgationDate}\n시행일자: ${mEnforcementDate}`;
               } else {
-                 mBeforeText = "신구조문 대비표 제공 안 됨 (원문 참고)";
-                 mAfterText = "신구조문 대비표 제공 안 됨 (원문 참고)";
+                 mBeforeText = "신구조문 대비표 제공 안 됨 (법제처 원문 참고 요망)";
+                 mAfterText = "해당 개정건에 대한 본문 텍스트 제공 안 됨 (법제처 원문 참고 요망)";
               }
             }
           } catch (detailErr) {
