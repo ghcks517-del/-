@@ -49,6 +49,7 @@ export function setupRevisionRoutes(router: Router) {
             if (note !== undefined) updateData.note = note;
 
             await updateDoc(docRef, updateData);
+            res.json({ success: true });
         } catch (error) {
             console.error("Error updating revision:", error);
             res.status(500).json({ error: "Failed to update revision" });

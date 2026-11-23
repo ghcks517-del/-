@@ -1,3 +1,5 @@
+import axios from "axios";
+import { parseStringPromise } from "xml2js";
 import { LawApiClient } from "./LawApiClient.js";
 import { RegulationRepository } from "../repositories.js";
 import { getDb } from "../firebase.js";
@@ -153,9 +155,6 @@ export class SyncService {
         if (dataApiKey) {
             try {
                 // 실제 공공데이터포털 입법예고 API 연동 (국민참여입법센터 입법예고 목록)
-                const axios = require('axios');
-                const { parseStringPromise } = require('xml2js');
-                
                 const res = await axios.get("http://apis.data.go.kr/1130000/MllwnoLrsrcInfoService/getMllwnoLrsrcInfoList", {
                     params: { serviceKey: decodeURIComponent(dataApiKey), pageNo: 1, numOfRows: 100 }
                 });

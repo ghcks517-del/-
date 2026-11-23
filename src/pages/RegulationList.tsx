@@ -13,17 +13,21 @@ export default function RegulationList() {
   const [isSaving, setIsSaving] = useState(false);
   const [isConfirmingDelete, setIsConfirmingDelete] = useState<string | null>(null);
   const [modalError, setModalError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     loadRegulations();
   }, []);
 
   const loadRegulations = async () => {
+    setLoading(true);
+    setLoadError(null);
     try {
       const data = await api.regulations.list();
       setRegulations(data);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setLoadError(err?.message || "법규 목록을 불러오는 데 실패했습니다.");
     } finally {
       setLoading(false);
     }
@@ -137,6 +141,18 @@ export default function RegulationList() {
                 <tr>
                   <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
                     데이터를 불러오는 중입니다...
+                  </td>
+                </tr>
+              ) : loadError ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-8 text-center">
+                    <p className="text-red-600 font-medium mb-2">법규 목록을 불러오지 못했습니다: {loadError}</p>
+                    <button
+                      onClick={loadRegulations}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-medium transition-colors"
+                    >
+                      다시 시도
+                    </button>
                   </td>
                 </tr>
               ) : filteredRegulations.length === 0 ? (

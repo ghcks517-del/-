@@ -1,8 +1,22 @@
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiClient: GoogleGenAI | null = null;
+
+function getAiClient(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  if (!aiClient) {
+    aiClient = new GoogleGenAI({ apiKey });
+  }
+  return aiClient;
+}
 
 export async function summarizeRevision(beforeText: string, afterText: string) {
+  const ai = getAiClient();
+  if (!ai) {
+    console.warn("GEMINI_API_KEY is not configured; skipping AI summary.");
+    return null;
+  }
   const prompt = `다음은 법령의 개정 전/후 원문입니다.
 이 개정 사항의 핵심을 파악하여 다음 JSON 형식으로 정확히 출력하세요.
 개정 전/후 원문에 명시적으로 나타나지 않은 내용은 절대 유추하여 적지 마시고, 빈 배열로 두거나 "원문에서 확인되지 않음"이라고 적어주세요.
