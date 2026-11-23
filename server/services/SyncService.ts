@@ -39,109 +39,126 @@ export class SyncService {
       let successCount = 0;
       let failedCount = 0;
 
-      for (const reg of activeRegs) {
-        let status: SyncRunItem["status"] = "SUCCESS";
-        let errorMessage: string | null = null;
-        let revisionCount = 0;
-        const itemStartedAt = new Date().toISOString();
+      const BATCH_SIZE = 5;
+      for (let i = 0; i < activeRegs.length; i += BATCH_SIZE) {
+        const batchRegs = activeRegs.slice(i, i + BATCH_SIZE);
+        await Promise.all(
+          batchRegs.map(async (reg) => {
+            let status: SyncRunItem["status"] = "SUCCESS";
+            let errorMessage: string | null = null;
+            let revisionCount = 0;
+            const itemStartedAt = new Date().toISOString();
 
-        try {
-          // 3. Fetch revisions for this month
-          const revisions = await this.lawApiClient.getRecentRevisions(reg.lawName, reg.regulationType, targetYear, targetMonth);
-          
-          if (revisions.length === 0) {
-            status = "UNCHANGED";
-            unchangedCount++;
-          } else {
-            // Deduplication
-            const existingQ = query(collection(db, "revisions"), where("lawName", "==", reg.lawName));
-            const existingSnap = await getDocs(existingQ);
-            const existingRevisions = existingSnap.docs.map(d => d.data());
-
-            const uniqueRevisions: typeof revisions = [];
-            for (const rev of revisions) {
-              const isDup = uniqueRevisions.some(u => u.promulgationDate === rev.promulgationDate && u.beforeText === rev.beforeText && u.afterText === rev.afterText);
-              if (!isDup) uniqueRevisions.push(rev);
-            }
-
-            const newRevisions = uniqueRevisions.filter(rev => {
-              const isDuplicate = existingRevisions.some(e => 
-                e.promulgationDate === rev.promulgationDate &&
-                e.beforeText === rev.beforeText &&
-                e.afterText === rev.afterText
+            try {
+              // 3. Fetch revisions for this month
+              const revisions = await this.lawApiClient.getRecentRevisions(
+                reg.lawName,
+                reg.regulationType,
+                targetYear,
+                targetMonth
               );
-              return !isDuplicate;
-            });
 
-            if (newRevisions.length === 0) {
-              status = "UNCHANGED";
-              unchangedCount++;
-            } else {
-              status = "SUCCESS";
-              changedCount++;
-              
-              // For each revision, optionally call Gemini to summarize
-              const batch = writeBatch(db);
-              
-              for (const rev of newRevisions) {
-                const aiSummary = await summarizeRevision(rev.beforeText, rev.afterText);
-                
-                const revisionDocRef = doc(collection(db, "revisions"));
-              batch.set(revisionDocRef, {
-                regulationId: reg.id,
-                sourceLawId: rev.sourceLawId,
-                revisionId: rev.revisionId,
-                lawName: reg.lawName,
-                promulgationDate: rev.promulgationDate,
-                enforcementDate: rev.enforcementDate,
-                revisionType: rev.revisionType,
-                beforeText: rev.beforeText,
-                afterText: rev.afterText,
-                diffData: rev.diffData || "",
-                aiSummary,
-                departments: reg.defaultDepartments || [],
-                note: reg.defaultNote || "",
-                reviewStatus: "NEW",
-                reviewer: null,
-                reviewedAt: null,
-                sourceUrl: rev.sourceUrl,
-                collectedAt: rev.collectedAt,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-                updatedBy: null
-              } as Omit<Revision, "id">);
-              revisionCount++;
+              if (revisions.length === 0) {
+                status = "UNCHANGED";
+                unchangedCount++;
+              } else {
+                // Deduplication
+                const existingQ = query(collection(db, "revisions"), where("lawName", "==", reg.lawName));
+                const existingSnap = await getDocs(existingQ);
+                const existingRevisions = existingSnap.docs.map((d) => d.data());
+
+                const uniqueRevisions: typeof revisions = [];
+                for (const rev of revisions) {
+                  const isDup = uniqueRevisions.some(
+                    (u) =>
+                      u.promulgationDate === rev.promulgationDate &&
+                      u.beforeText === rev.beforeText &&
+                      u.afterText === rev.afterText
+                  );
+                  if (!isDup) uniqueRevisions.push(rev);
+                }
+
+                const newRevisions = uniqueRevisions.filter((rev) => {
+                  const isDuplicate = existingRevisions.some(
+                    (e) =>
+                      e.promulgationDate === rev.promulgationDate &&
+                      e.beforeText === rev.beforeText &&
+                      e.afterText === rev.afterText
+                  );
+                  return !isDuplicate;
+                });
+
+                if (newRevisions.length === 0) {
+                  status = "UNCHANGED";
+                  unchangedCount++;
+                } else {
+                  status = "SUCCESS";
+                  changedCount++;
+
+                  // For each revision, optionally call Gemini to summarize
+                  const batch = writeBatch(db);
+
+                  for (const rev of newRevisions) {
+                    const aiSummary = await summarizeRevision(rev.beforeText, rev.afterText);
+
+                    const revisionDocRef = doc(collection(db, "revisions"));
+                    batch.set(revisionDocRef, {
+                      regulationId: reg.id,
+                      sourceLawId: rev.sourceLawId,
+                      revisionId: rev.revisionId,
+                      lawName: reg.lawName,
+                      promulgationDate: rev.promulgationDate,
+                      enforcementDate: rev.enforcementDate,
+                      revisionType: rev.revisionType,
+                      beforeText: rev.beforeText,
+                      afterText: rev.afterText,
+                      diffData: rev.diffData || "",
+                      aiSummary,
+                      departments: reg.defaultDepartments || [],
+                      note: reg.defaultNote || "",
+                      reviewStatus: "NEW",
+                      reviewer: null,
+                      reviewedAt: null,
+                      sourceUrl: rev.sourceUrl,
+                      collectedAt: rev.collectedAt,
+                      createdAt: new Date().toISOString(),
+                      updatedAt: new Date().toISOString(),
+                      updatedBy: null,
+                    } as Omit<Revision, "id">);
+                    revisionCount++;
+                  }
+
+                  await batch.commit();
+                }
+              }
+
+              successCount++;
+            } catch (err: any) {
+              status = "FAILED";
+              errorMessage = err.message || "Unknown error";
+              failedCount++;
             }
-            
-            await batch.commit();
-            }
-          }
 
-          successCount++;
-        } catch (err: any) {
-          status = "FAILED";
-          errorMessage = err.message || "Unknown error";
-          failedCount++;
-        }
+            // Add item log
+            await addDoc(collection(db, "syncRunItems"), {
+              syncRunId: syncRunRef.id,
+              regulationId: reg.id,
+              status,
+              revisionCount,
+              startedAt: itemStartedAt,
+              completedAt: new Date().toISOString(),
+              errorMessage,
+            } as Omit<SyncRunItem, "id">);
 
-        // Add item log
-        await addDoc(collection(db, "syncRunItems"), {
-          syncRunId: syncRunRef.id,
-          regulationId: reg.id,
-          status,
-          revisionCount,
-          startedAt: itemStartedAt,
-          completedAt: new Date().toISOString(),
-          errorMessage
-        } as Omit<SyncRunItem, "id">);
-        
-        // Update regulation last checked
-        if (status === "SUCCESS" || status === "UNCHANGED") {
-            await RegulationRepository.update(reg.id, {
+            // Update regulation last checked
+            if (status === "SUCCESS" || status === "UNCHANGED") {
+              await RegulationRepository.update(reg.id, {
                 lastCheckedAt: new Date().toISOString(),
                 lastSuccessfulCheckedAt: new Date().toISOString(),
-            });
-        }
+              });
+            }
+          })
+        );
       }
 
       // ===== 수집: 입법예고 (API or MOCK Fallback) =====
