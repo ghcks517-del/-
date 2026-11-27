@@ -23,9 +23,20 @@ export interface NormalizedLawRevision {
   collectedAt: string;
 }
 
-interface ApiAuthConfig {
+export interface ApiAuthConfig {
   oc: string;
   referer: string;
+}
+
+export interface MonthlyLawIndex {
+  byNormalizedName: Map<string, any[]>;
+  authUsed: ApiAuthConfig;
+  targetYear: number;
+  targetMonth: number;
+}
+
+export function normalizeLawName(name: string): string {
+  return (name || "").replace(/\s+/g, "");
 }
 
 export class LawApiClient {
@@ -51,14 +62,18 @@ export class LawApiClient {
     return null;
   }
 
-  private async fetchXml(urlTemplate: (oc: string) => string, auth: ApiAuthConfig): Promise<{ parsed: any; authUsed: ApiAuthConfig }> {
+  private async fetchXml(
+    urlTemplate: (oc: string) => string,
+    auth: ApiAuthConfig,
+    timeoutMs = 10000
+  ): Promise<{ parsed: any; authUsed: ApiAuthConfig }> {
     const requestWithAuth = async (currentAuth: ApiAuthConfig) => {
       const response = await axios.get(urlTemplate(currentAuth.oc), {
         headers: {
           Referer: currentAuth.referer,
           "User-Agent": USER_AGENT,
         },
-        timeout: 15000,
+        timeout: timeoutMs,
       });
       return parseStringPromise(response.data);
     };
@@ -83,33 +98,51 @@ export class LawApiClient {
     return { parsed, authUsed: auth };
   }
 
-  async searchLaw(keyword: string) {
-    const auth = this.getPrimaryAuth();
-    try {
-      const { parsed } = await this.fetchXml(
-        (oc) => `${BASE_URL}?target=law&query=${encodeURIComponent(keyword)}&type=XML&OC=${oc}&sort=ddes`,
-        auth
-      );
-      if (parsed.LawSearch && parsed.LawSearch.law) {
-        return parsed.LawSearch.law.map((l: any) => ({
-          lawId: l["법령ID"]?.[0] || "",
-          lawName: l["법령명한글"]?.[0] || keyword,
-          promulgationDate: l["공포일자"]?.[0] || "",
-          enforcementDate: l["시행일자"]?.[0] || "",
-        }));
+  private async fetchAllPagesForTarget(
+    target: "law" | "eflaw",
+    ancYd: string,
+    auth: ApiAuthConfig
+  ): Promise<{ laws: any[]; authUsed: ApiAuthConfig }> {
+    const first = await this.fetchXml(
+      (oc) => `${BASE_URL}?target=${target}&type=XML&OC=${oc}&display=100&page=1&sort=ddes&ancYd=${ancYd}`,
+      auth
+    );
+
+    const activeAuth = first.authUsed;
+    const totalCnt = parseInt(first.parsed?.LawSearch?.totalCnt?.[0] || "0", 10);
+    let laws: any[] = first.parsed?.LawSearch?.law || [];
+
+    const totalPages = Math.min(Math.ceil(totalCnt / 100), 15);
+    if (totalPages > 1) {
+      const pagePromises = [];
+      for (let page = 2; page <= totalPages; page++) {
+        pagePromises.push(
+          this.fetchXml(
+            (oc) =>
+              `${BASE_URL}?target=${target}&type=XML&OC=${oc}&display=100&page=${page}&sort=ddes&ancYd=${ancYd}`,
+            activeAuth
+          )
+            .then((r) => r.parsed?.LawSearch?.law || [])
+            .catch((err) => {
+              console.warn(`Failed fetching ${target} page ${page}:`, err?.message);
+              return [];
+            })
+        );
       }
-    } catch (err) {
-      console.error("searchLaw api error", err);
+      const remainingPages = await Promise.all(pagePromises);
+      for (const pageLaws of remainingPages) {
+        laws = laws.concat(pageLaws);
+      }
     }
-    return [];
+
+    return { laws, authUsed: activeAuth };
   }
 
-  async getRecentRevisions(
-    lawName: string,
-    regulationType: string,
-    targetYear?: number,
-    targetMonth?: number
-  ): Promise<NormalizedLawRevision[]> {
+  /**
+   * Fetch all laws promulgated in a given year/month in a few bulk paginated calls
+   * instead of making 2*N HTTP calls for N monitored regulations.
+   */
+  async fetchMonthlyLawIndex(targetYear?: number, targetMonth?: number): Promise<MonthlyLawIndex> {
     const auth = this.getPrimaryAuth();
     const now = new Date();
     const yyyy = targetYear || now.getFullYear();
@@ -117,54 +150,51 @@ export class LawApiClient {
     const mm = String(monthNum).padStart(2, "0");
     const lastDay = String(new Date(yyyy, monthNum, 0).getDate()).padStart(2, "0");
     const ancYd = `${yyyy}${mm}01~${yyyy}${mm}${lastDay}`;
+    const targetPrefix = `${yyyy}${mm}`;
 
-    const q = encodeURIComponent(lawName);
-
-    const [lawRes, eflawRes] = await Promise.all([
-      this.fetchXml(
-        (oc) => `${BASE_URL}?target=law&query=${q}&type=XML&OC=${oc}&display=100&sort=ddes&ancYd=${ancYd}`,
-        auth
-      ),
-      this.fetchXml(
-        (oc) => `${BASE_URL}?target=eflaw&query=${q}&type=XML&OC=${oc}&display=100&sort=ddes&ancYd=${ancYd}`,
-        auth
-      ),
+    const [lawResult, eflawResult] = await Promise.all([
+      this.fetchAllPagesForTarget("law", ancYd, auth),
+      this.fetchAllPagesForTarget("eflaw", ancYd, auth),
     ]);
 
-    const parsedLaw = lawRes.parsed;
-    const parsedEflaw = eflawRes.parsed;
-    const activeAuth = lawRes.authUsed;
-
-    let allLaws: any[] = [];
-    if (parsedLaw.LawSearch && parsedLaw.LawSearch.law) allLaws = allLaws.concat(parsedLaw.LawSearch.law);
-    if (parsedEflaw.LawSearch && parsedEflaw.LawSearch.law) allLaws = allLaws.concat(parsedEflaw.LawSearch.law);
-
-    if (allLaws.length === 0) {
-      return [];
+    const combined = [...lawResult.laws, ...eflawResult.laws];
+    const uniqueByMst = new Map<string, any>();
+    for (const item of combined) {
+      const mst = item?.["법령일련번호"]?.[0];
+      if (mst) {
+        uniqueByMst.set(mst, item);
+      }
     }
 
-    const uniqueLawsMap = new Map();
-    for (const l of allLaws) {
-      uniqueLawsMap.set(l["법령일련번호"]?.[0], l);
-    }
-    allLaws = Array.from(uniqueLawsMap.values());
+    const byNormalizedName = new Map<string, any[]>();
+    for (const item of uniqueByMst.values()) {
+      const pDate = item?.["공포일자"]?.[0] || "";
+      if (!pDate.startsWith(targetPrefix)) continue;
 
-    const targetYearStr = yyyy.toString();
-    const targetMonthStr = mm;
+      const normName = normalizeLawName(item?.["법령명한글"]?.[0] || "");
+      if (!normName) continue;
 
-    const matchedLaws = allLaws.filter((l: any) => {
-      const pDate = l["공포일자"]?.[0] || "";
-      const actualName = l["법령명한글"]?.[0] || "";
-      return (
-        pDate.startsWith(`${targetYearStr}${targetMonthStr}`) &&
-        actualName.replace(/ /g, "") === lawName.replace(/ /g, "")
-      );
-    });
-
-    if (matchedLaws.length === 0) {
-      return [];
+      const list = byNormalizedName.get(normName) || [];
+      list.push(item);
+      byNormalizedName.set(normName, list);
     }
 
+    return {
+      byNormalizedName,
+      authUsed: lawResult.authUsed,
+      targetYear: yyyy,
+      targetMonth: monthNum,
+    };
+  }
+
+  async fetchRevisionDetailsForMatchedLaws(
+    matchedLaws: any[],
+    lawName: string,
+    regulationType: string,
+    yyyy: number,
+    mm: string,
+    activeAuth: ApiAuthConfig
+  ): Promise<NormalizedLawRevision[]> {
     const results: NormalizedLawRevision[] = [];
 
     for (const law of matchedLaws) {
@@ -293,5 +323,88 @@ export class LawApiClient {
     }
 
     return results;
+  }
+
+  async searchLaw(keyword: string) {
+    const auth = this.getPrimaryAuth();
+    try {
+      const { parsed } = await this.fetchXml(
+        (oc) => `${BASE_URL}?target=law&query=${encodeURIComponent(keyword)}&type=XML&OC=${oc}&sort=ddes`,
+        auth
+      );
+      if (parsed.LawSearch && parsed.LawSearch.law) {
+        return parsed.LawSearch.law.map((l: any) => ({
+          lawId: l["법령ID"]?.[0] || "",
+          lawName: l["법령명한글"]?.[0] || keyword,
+          promulgationDate: l["공포일자"]?.[0] || "",
+          enforcementDate: l["시행일자"]?.[0] || "",
+        }));
+      }
+    } catch (err) {
+      console.error("searchLaw api error", err);
+    }
+    return [];
+  }
+
+  async getRecentRevisions(
+    lawName: string,
+    regulationType: string,
+    targetYear?: number,
+    targetMonth?: number
+  ): Promise<NormalizedLawRevision[]> {
+    const auth = this.getPrimaryAuth();
+    const now = new Date();
+    const yyyy = targetYear || now.getFullYear();
+    const monthNum = targetMonth || now.getMonth() + 1;
+    const mm = String(monthNum).padStart(2, "0");
+    const lastDay = String(new Date(yyyy, monthNum, 0).getDate()).padStart(2, "0");
+    const ancYd = `${yyyy}${mm}01~${yyyy}${mm}${lastDay}`;
+
+    const q = encodeURIComponent(lawName);
+
+    const [lawRes, eflawRes] = await Promise.all([
+      this.fetchXml(
+        (oc) => `${BASE_URL}?target=law&query=${q}&type=XML&OC=${oc}&display=100&sort=ddes&ancYd=${ancYd}`,
+        auth
+      ),
+      this.fetchXml(
+        (oc) => `${BASE_URL}?target=eflaw&query=${q}&type=XML&OC=${oc}&display=100&sort=ddes&ancYd=${ancYd}`,
+        auth
+      ),
+    ]);
+
+    const parsedLaw = lawRes.parsed;
+    const parsedEflaw = eflawRes.parsed;
+    const activeAuth = lawRes.authUsed;
+
+    let allLaws: any[] = [];
+    if (parsedLaw.LawSearch && parsedLaw.LawSearch.law) allLaws = allLaws.concat(parsedLaw.LawSearch.law);
+    if (parsedEflaw.LawSearch && parsedEflaw.LawSearch.law) allLaws = allLaws.concat(parsedEflaw.LawSearch.law);
+
+    if (allLaws.length === 0) {
+      return [];
+    }
+
+    const uniqueLawsMap = new Map();
+    for (const l of allLaws) {
+      uniqueLawsMap.set(l["법령일련번호"]?.[0], l);
+    }
+    allLaws = Array.from(uniqueLawsMap.values());
+
+    const targetYearStr = yyyy.toString();
+    const targetMonthStr = mm;
+    const normTarget = normalizeLawName(lawName);
+
+    const matchedLaws = allLaws.filter((l: any) => {
+      const pDate = l["공포일자"]?.[0] || "";
+      const actualName = l["법령명한글"]?.[0] || "";
+      return pDate.startsWith(`${targetYearStr}${targetMonthStr}`) && normalizeLawName(actualName) === normTarget;
+    });
+
+    if (matchedLaws.length === 0) {
+      return [];
+    }
+
+    return this.fetchRevisionDetailsForMatchedLaws(matchedLaws, lawName, regulationType, yyyy, mm, activeAuth);
   }
 }

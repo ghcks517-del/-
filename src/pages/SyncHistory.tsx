@@ -7,23 +7,25 @@ export default function SyncHistory() {
   const [running, setRunning] = useState(false);
   const [runs, setRuns] = useState<SyncRun[]>([]);
   const [showPopup, setShowPopup] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const currentYear = new Date().getFullYear();
   const currentMonth = new Date().getMonth() + 1;
   const [selectedYear, setSelectedYear] = useState(currentYear);
   const [selectedMonth, setSelectedMonth] = useState(currentMonth);
 
-  useEffect(() => {
-    const loadRuns = async () => {
-      try {
-        const data = await fetch("/api/sync-runs").then(r => r.json());
-        if (Array.isArray(data)) {
-            setRuns(data);
-        }
-      } catch(e) {
-          console.error(e);
+  const loadRuns = async () => {
+    try {
+      const data = await fetch("/api/sync-runs").then(r => r.json());
+      if (Array.isArray(data)) {
+        setRuns(data);
       }
-    };
+    } catch(e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
     loadRuns();
     const interval = setInterval(loadRuns, 5000); // refresh every 5s
     return () => clearInterval(interval);
@@ -44,12 +46,15 @@ export default function SyncHistory() {
   const handleManualSync = async () => {
     setShowPopup(false);
     setRunning(true);
+    setSyncError(null);
     try {
       await api.sync.runMonthly(selectedYear, selectedMonth);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setSyncError(err?.message || "수집 실행 중 오류가 발생했습니다.");
     } finally {
       setRunning(false);
+      await loadRuns();
     }
   };
 
@@ -69,6 +74,15 @@ export default function SyncHistory() {
           {running ? "실행 중..." : "전체 지금 확인"}
         </button>
       </div>
+
+      {syncError && (
+        <div className="mb-4 p-4 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm flex justify-between items-center">
+          <span>수집 실행 실패: {syncError}</span>
+          <button onClick={() => setSyncError(null)} className="text-red-500 hover:text-red-700">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       <div className="bg-white border border-slate-200 rounded-lg shadow-sm">
         {runs.length === 0 ? (

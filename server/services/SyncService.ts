@@ -1,24 +1,48 @@
 import axios from "axios";
 import { parseStringPromise } from "xml2js";
-import { LawApiClient } from "./LawApiClient.js";
+import { LawApiClient, normalizeLawName } from "./LawApiClient.js";
 import { RegulationRepository } from "../repositories.js";
 import { getDb } from "../firebase.js";
-import { collection, addDoc, doc, writeBatch, query, where, getDocs } from "firebase/firestore";
-
+import { collection, addDoc, doc, writeBatch, query, where, getDocs, updateDoc } from "firebase/firestore";
 import { summarizeRevision } from "../gemini.js";
-import { SyncRun, SyncRunItem, Revision, LegislativeNotice } from "../../src/types/index.js";
+import { SyncRun, SyncRunItem, Revision } from "../../src/types/index.js";
+
+const AI_SUMMARY_TIMEOUT_MS = 10000;
+const SYNC_AI_TIME_BUDGET_MS = 32000;
+
+async function summarizeWithTimeout(beforeText: string, afterText: string) {
+  return Promise.race([
+    summarizeRevision(beforeText, afterText),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), AI_SUMMARY_TIMEOUT_MS)),
+  ]);
+}
 
 export class SyncService {
   private lawApiClient = new LawApiClient();
 
-  async runMonthlySync(triggerType: "MANUAL" | "AUTO", targetYear?: number, targetMonth?: number): Promise<void> {
+  async runMonthlySync(
+    triggerType: "MANUAL" | "AUTO",
+    targetYear?: number,
+    targetMonth?: number
+  ): Promise<{
+    syncRunId: string;
+    status: SyncRun["status"];
+    totalCount: number;
+    changedCount: number;
+    failedCount: number;
+    elapsedMs: number;
+  }> {
     const db = getDb();
-    
+    const runStartMs = Date.now();
+    const yyyy = targetYear || new Date().getFullYear();
+    const monthNum = targetMonth || new Date().getMonth() + 1;
+    const mm = String(monthNum).padStart(2, "0");
+
     // 1. Create SyncRun record
     const syncRunRef = await addDoc(collection(db, "syncRuns"), {
       triggerType,
-      targetYear: targetYear || new Date().getFullYear(),
-      targetMonth: targetMonth || new Date().getMonth() + 1,
+      targetYear: yyyy,
+      targetMonth: monthNum,
       startedAt: new Date().toISOString(),
       completedAt: null,
       status: "RUNNING",
@@ -27,42 +51,72 @@ export class SyncService {
       unchangedCount: 0,
       successCount: 0,
       failedCount: 0,
-      errorSummary: null
+      errorSummary: null,
     } as Omit<SyncRun, "id">);
 
     try {
-      // 2. Fetch all active regulations
-      const activeRegs = await RegulationRepository.getAllActive();
-      
+      // 2. Fetch active regulations + bulk monthly law index in parallel (~1-2s total)
+      const [activeRegs, monthlyIndex] = await Promise.all([
+        RegulationRepository.getAllActive(),
+        this.lawApiClient.fetchMonthlyLawIndex(yyyy, monthNum),
+      ]);
+
       let changedCount = 0;
       let unchangedCount = 0;
       let successCount = 0;
       let failedCount = 0;
 
-      const BATCH_SIZE = 5;
-      for (let i = 0; i < activeRegs.length; i += BATCH_SIZE) {
-        const batchRegs = activeRegs.slice(i, i + BATCH_SIZE);
+      const checkedAt = new Date().toISOString();
+      const pendingItems: Omit<SyncRunItem, "id">[] = [];
+      const regIdsToMarkChecked: string[] = [];
+
+      // Partition regulations into unchanged vs matched in this month
+      const matchedRegs: Array<{ reg: (typeof activeRegs)[number]; matchedLaws: any[] }> = [];
+      for (const reg of activeRegs) {
+        const matchedLaws = monthlyIndex.byNormalizedName.get(normalizeLawName(reg.lawName)) || [];
+        if (matchedLaws.length === 0) {
+          unchangedCount++;
+          successCount++;
+          pendingItems.push({
+            syncRunId: syncRunRef.id,
+            regulationId: reg.id,
+            status: "UNCHANGED",
+            revisionCount: 0,
+            startedAt: checkedAt,
+            completedAt: checkedAt,
+            errorMessage: null,
+          });
+          regIdsToMarkChecked.push(reg.id);
+        } else {
+          matchedRegs.push({ reg, matchedLaws });
+        }
+      }
+
+      // 3. Only fetch revision details & save for regulations that actually changed this month
+      const DETAIL_BATCH_SIZE = 5;
+      for (let i = 0; i < matchedRegs.length; i += DETAIL_BATCH_SIZE) {
+        const slice = matchedRegs.slice(i, i + DETAIL_BATCH_SIZE);
         await Promise.all(
-          batchRegs.map(async (reg) => {
+          slice.map(async ({ reg, matchedLaws }) => {
             let status: SyncRunItem["status"] = "SUCCESS";
             let errorMessage: string | null = null;
             let revisionCount = 0;
             const itemStartedAt = new Date().toISOString();
 
             try {
-              // 3. Fetch revisions for this month
-              const revisions = await this.lawApiClient.getRecentRevisions(
+              const revisions = await this.lawApiClient.fetchRevisionDetailsForMatchedLaws(
+                matchedLaws,
                 reg.lawName,
                 reg.regulationType,
-                targetYear,
-                targetMonth
+                yyyy,
+                mm,
+                monthlyIndex.authUsed
               );
 
               if (revisions.length === 0) {
                 status = "UNCHANGED";
                 unchangedCount++;
               } else {
-                // Deduplication
                 const existingQ = query(collection(db, "revisions"), where("lawName", "==", reg.lawName));
                 const existingSnap = await getDocs(existingQ);
                 const existingRevisions = existingSnap.docs.map((d) => d.data());
@@ -95,14 +149,19 @@ export class SyncService {
                   status = "SUCCESS";
                   changedCount++;
 
-                  // For each revision, optionally call Gemini to summarize
-                  const batch = writeBatch(db);
+                  const aiSummaries = await Promise.all(
+                    newRevisions.map(async (rev) => {
+                      if (Date.now() - runStartMs > SYNC_AI_TIME_BUDGET_MS) {
+                        return null;
+                      }
+                      return summarizeWithTimeout(rev.beforeText, rev.afterText);
+                    })
+                  );
 
-                  for (const rev of newRevisions) {
-                    const aiSummary = await summarizeRevision(rev.beforeText, rev.afterText);
-
+                  const revBatch = writeBatch(db);
+                  newRevisions.forEach((rev, idx) => {
                     const revisionDocRef = doc(collection(db, "revisions"));
-                    batch.set(revisionDocRef, {
+                    revBatch.set(revisionDocRef, {
                       regulationId: reg.id,
                       sourceLawId: rev.sourceLawId,
                       revisionId: rev.revisionId,
@@ -113,7 +172,7 @@ export class SyncService {
                       beforeText: rev.beforeText,
                       afterText: rev.afterText,
                       diffData: rev.diffData || "",
-                      aiSummary,
+                      aiSummary: aiSummaries[idx],
                       departments: reg.defaultDepartments || [],
                       note: reg.defaultNote || "",
                       reviewStatus: "NEW",
@@ -126,21 +185,21 @@ export class SyncService {
                       updatedBy: null,
                     } as Omit<Revision, "id">);
                     revisionCount++;
-                  }
+                  });
 
-                  await batch.commit();
+                  await revBatch.commit();
                 }
               }
 
               successCount++;
+              regIdsToMarkChecked.push(reg.id);
             } catch (err: any) {
               status = "FAILED";
               errorMessage = err.message || "Unknown error";
               failedCount++;
             }
 
-            // Add item log
-            await addDoc(collection(db, "syncRunItems"), {
+            pendingItems.push({
               syncRunId: syncRunRef.id,
               regulationId: reg.id,
               status,
@@ -148,102 +207,93 @@ export class SyncService {
               startedAt: itemStartedAt,
               completedAt: new Date().toISOString(),
               errorMessage,
-            } as Omit<SyncRunItem, "id">);
-
-            // Update regulation last checked
-            if (status === "SUCCESS" || status === "UNCHANGED") {
-              await RegulationRepository.update(reg.id, {
-                lastCheckedAt: new Date().toISOString(),
-                lastSuccessfulCheckedAt: new Date().toISOString(),
-              });
-            }
+            });
           })
         );
       }
 
-      // ===== 수집: 입법예고 (API or MOCK Fallback) =====
-      try {
-        const yyyy = targetYear || new Date().getFullYear();
-        const mm = String(targetMonth || (new Date().getMonth() + 1)).padStart(2, "0");
-        
-        let fetchedNotices: any[] = [];
-        const dataApiKey = process.env.DATA_GO_KR_API_KEY;
-        
-        if (dataApiKey) {
-            try {
-                // 실제 공공데이터포털 입법예고 API 연동 (국민참여입법센터 입법예고 목록)
-                const res = await axios.get("http://apis.data.go.kr/1130000/MllwnoLrsrcInfoService/getMllwnoLrsrcInfoList", {
-                    params: { serviceKey: decodeURIComponent(dataApiKey), pageNo: 1, numOfRows: 100 }
-                });
-                const parsed = await parseStringPromise(res.data);
-                
-                if (parsed.response && parsed.response.body && parsed.response.body[0].items && parsed.response.body[0].items[0].item) {
-                    const items = parsed.response.body[0].items[0].item;
-                    fetchedNotices = items.map((item: any) => ({
-                        noticeId: `notice-${item.pbancNo?.[0] || Math.random()}`,
-                        title: item.lrsrcNm?.[0] || "",
-                        department: item.chrscDptNm?.[0] || "",
-                        startDate: item.pbancBgngYmd?.[0] || "",
-                        endDate: item.pbancEndYmd?.[0] || "",
-                        content: item.ntceMainCn?.[0] || "상세내용 참고",
-                        status: "입법예고",
-                        sourceUrl: item.url?.[0] || "https://opinion.lawmaking.go.kr",
-                        collectedAt: new Date().toISOString(),
-                        createdAt: new Date().toISOString()
-                    }));
-                }
-            } catch (apiErr: any) {
-                console.error("공공데이터포털 API 연동 실패 (Fallback Mock 사용):", apiErr.message);
-            }
-        }
-        
-        if (fetchedNotices.length === 0) {
-            // API 키가 없거나 연동 실패 시, 사용자의 구독 법령(activeRegs) 기반으로 동적 Mock 데이터 생성
-            console.log("Using dynamic mock data for legislative notices...");
-            const startDatePrefix = `${yyyy}-${mm}`;
-            
-            fetchedNotices = activeRegs.map((reg, idx) => ({
-                noticeId: `notice-${yyyy}${mm}-${idx}`,
-                title: `${reg.lawName} 일부개정법률안 입법예고 (Mock)`,
-                department: "관할부처",
-                startDate: `${startDatePrefix}-${String((idx % 28) + 1).padStart(2, '0')}`,
-                endDate: `${startDatePrefix}-${String(((idx + 14) % 28) + 1).padStart(2, '0')}`,
-                content: `1. 개정이유
-현행 ${reg.lawName}의 운영상 나타난 일부 미비점을 개선ㆍ보완하려는 것임.
+      // 4. Commit syncRunItems and regulation lastCheckedAt in batched writes (max 450 ops per batch)
+      const nowIso = new Date().toISOString();
+      const writeOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
 
-2. 주요내용
-가. 주요 규제 완화 또는 기준 명확화
-나. 과태료 등 제재 규정 정비`,
-                status: "진행중",
-                sourceUrl: "https://www.lawmaking.go.kr/",
-                collectedAt: new Date().toISOString(),
-                createdAt: new Date().toISOString()
-            }));
-        }
-
-        // 필터링: 등록된 법규명(activeRegs)에 해당하는 입법예고만 추출
-        const filteredNotices = fetchedNotices.filter(notice => 
-          activeRegs.some(reg => notice.title.includes(reg.lawName))
+      for (const item of pendingItems) {
+        const itemRef = doc(collection(db, "syncRunItems"));
+        writeOps.push((b) => b.set(itemRef, item));
+      }
+      for (const regId of regIdsToMarkChecked) {
+        const regRef = doc(db, "regulations", regId);
+        writeOps.push((b) =>
+          b.update(regRef, {
+            lastCheckedAt: nowIso,
+            lastSuccessfulCheckedAt: nowIso,
+          })
         );
-        
-        if (filteredNotices.length > 0) {
-          const batch = writeBatch(db);
-          for (const notice of filteredNotices) {
-            const docRef = doc(collection(db, "legislativeNotices"));
-            batch.set(docRef, notice);
-          }
-          await batch.commit();
-        }
-        console.log(`입법예고 ${filteredNotices.length}건 수집 완료`);
-      } catch (noticeErr) {
-        console.error("입법예고 수집 중 오류:", noticeErr);
       }
 
-      // Update SyncRun final status
-      const finalStatus = failedCount > 0 ? (successCount > 0 ? "PARTIAL_SUCCESS" : "FAILED") : "COMPLETED";
-      
-      const dbSyncRunRef = doc(db, "syncRuns", syncRunRef.id);
-      await writeBatch(db).update(dbSyncRunRef, {
+      const MAX_BATCH_OPS = 450;
+      for (let i = 0; i < writeOps.length; i += MAX_BATCH_OPS) {
+        const chunk = writeOps.slice(i, i + MAX_BATCH_OPS);
+        const batch = writeBatch(db);
+        chunk.forEach((applyOp) => applyOp(batch));
+        await batch.commit();
+      }
+
+      // 5. Optional legislative notices sync (with strict timeout so it never stalls the run)
+      const dataApiKey = process.env.DATA_GO_KR_API_KEY;
+      if (dataApiKey) {
+        try {
+          const res = await axios.get(
+            "http://apis.data.go.kr/1130000/MllwnoLrsrcInfoService/getMllwnoLrsrcInfoList",
+            {
+              params: { serviceKey: decodeURIComponent(dataApiKey), pageNo: 1, numOfRows: 100 },
+              timeout: 8000,
+            }
+          );
+          const parsed = await parseStringPromise(res.data);
+
+          if (
+            parsed.response &&
+            parsed.response.body &&
+            parsed.response.body[0].items &&
+            parsed.response.body[0].items[0].item
+          ) {
+            const items = parsed.response.body[0].items[0].item;
+            const fetchedNotices = items.map((item: any) => ({
+              noticeId: `notice-${item.pbancNo?.[0] || Math.random()}`,
+              title: item.lrsrcNm?.[0] || "",
+              department: item.chrscDptNm?.[0] || "",
+              startDate: item.pbancBgngYmd?.[0] || "",
+              endDate: item.pbancEndYmd?.[0] || "",
+              content: item.ntceMainCn?.[0] || "상세내용 참고",
+              status: "입법예고",
+              sourceUrl: item.url?.[0] || "https://opinion.lawmaking.go.kr",
+              collectedAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(),
+            }));
+
+            const filteredNotices = fetchedNotices.filter((notice: any) =>
+              activeRegs.some((reg) => notice.title.includes(reg.lawName))
+            );
+
+            if (filteredNotices.length > 0) {
+              const noticeBatch = writeBatch(db);
+              for (const notice of filteredNotices) {
+                const docRef = doc(collection(db, "legislativeNotices"));
+                noticeBatch.set(docRef, notice);
+              }
+              await noticeBatch.commit();
+            }
+          }
+        } catch (noticeErr: any) {
+          console.error("입법예고 API 수집 중 오류:", noticeErr?.message || noticeErr);
+        }
+      }
+
+      // 6. Finalize SyncRun status
+      const finalStatus: SyncRun["status"] =
+        failedCount > 0 ? (successCount > 0 ? "PARTIAL_SUCCESS" : "FAILED") : "COMPLETED";
+
+      await updateDoc(doc(db, "syncRuns", syncRunRef.id), {
         completedAt: new Date().toISOString(),
         status: finalStatus,
         totalCount: activeRegs.length,
@@ -251,16 +301,24 @@ export class SyncService {
         unchangedCount,
         successCount,
         failedCount,
-      }).commit();
+      });
 
+      return {
+        syncRunId: syncRunRef.id,
+        status: finalStatus,
+        totalCount: activeRegs.length,
+        changedCount,
+        failedCount,
+        elapsedMs: Date.now() - runStartMs,
+      };
     } catch (err: any) {
       console.error("SyncRun fatal error", err);
-      const dbSyncRunRef = doc(db, "syncRuns", syncRunRef.id);
-      await writeBatch(db).update(dbSyncRunRef, {
+      await updateDoc(doc(db, "syncRuns", syncRunRef.id), {
         completedAt: new Date().toISOString(),
         status: "FAILED",
-        errorSummary: err.message
-      }).commit();
+        errorSummary: err?.message || "Unknown error",
+      }).catch((e) => console.error("Failed updating SyncRun error state:", e));
+      throw err;
     }
   }
 }
